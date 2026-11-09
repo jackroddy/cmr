@@ -1,6 +1,6 @@
 //! A small markdown subset, parsed into blocks and laid out as
 //! lines of an exact width: headings, paragraphs, lists, fenced
-//! code, tables, rules and inline code. Everything else stays
+//! code, tables, rules, quotes, bold and inline code. Everything else stays
 //! literal text.
 
 mod hl;
@@ -88,6 +88,7 @@ pub type Row = Vec<Piece>;
 pub enum Inline {
     Text(String),
     Code(String),
+    Bold(String),
 }
 
 /// One entry of a list.
@@ -118,6 +119,7 @@ pub enum Block {
         rows: Vec<Vec<Vec<Inline>>>,
     },
     Rule,
+    Quote(Vec<Block>),
 }
 
 struct Theme {
@@ -127,6 +129,7 @@ struct Theme {
     lang: Style,
     bullet: Style,
     rule: Style,
+    quote: Style,
     comment: Style,
     string: Style,
     number: Style,
@@ -140,6 +143,7 @@ const THEME: Theme = Theme {
     lang: Style::new().dim(),
     bullet: Style::new().bold(),
     rule: Style::new().dim(),
+    quote: Style::new().dim(),
     // inside a code block the hues name token kinds, not the
     // concepts they stand for elsewhere; the gutter keeps them apart
     comment: Style::new().dim(),
@@ -165,6 +169,16 @@ pub fn parse(text: &str) -> Vec<Block> {
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
+        if quoted(line).is_some() {
+            flush(&mut blocks, &mut para, &mut list);
+            let mut inner = Vec::new();
+            while let Some(rest) = lines.get(i).and_then(|l| quoted(l)) {
+                inner.push(rest);
+                i += 1;
+            }
+            blocks.push(Block::Quote(parse(&inner.join("\n"))));
+            continue;
+        }
         if let Some(lang) = fence(line) {
             flush(&mut blocks, &mut para, &mut list);
             let mut code = Vec::new();
@@ -260,7 +274,7 @@ fn join(to: &mut Vec<Inline>, line: Vec<Inline>) {
     for inline in line {
         match inline {
             Inline::Text(t) => push_text(to, &t),
-            code => to.push(code),
+            other => to.push(other),
         }
     }
 }
@@ -283,6 +297,14 @@ fn heading(line: &str) -> Option<(u8, &str)> {
     }
     let rest = line[hashes..].strip_prefix(' ')?.trim();
     (!rest.is_empty()).then_some((hashes as u8, rest))
+}
+
+/// A quote line without its marker: `> ` or a bare `>`.
+fn quoted(line: &str) -> Option<&str> {
+    if line == ">" {
+        return Some("");
+    }
+    line.strip_prefix("> ")
 }
 
 /// Whether `line` is a rule: three or more `-` and nothing else.
@@ -370,15 +392,36 @@ fn list_item(line: &str) -> Option<(Item, usize)> {
 }
 
 /// The inlines of one line: a run of backticks opens code that
-/// the next run of the same length closes, and an unmatched run
-/// is text.
+/// the next run of the same length closes, and `**` opens bold
+/// that the next `**` closes. An unmatched run is text.
 fn inlines(line: &str) -> Vec<Inline> {
     let mut out = Vec::new();
     let mut text = String::new();
     let mut rest = line;
-    while let Some(start) = rest.find('`') {
+    while let Some(start) = rest.find(['`', '*']) {
         text.push_str(&rest[..start]);
         let after = &rest[start..];
+        if let Some(body) = after.strip_prefix("**") {
+            match body.find("**").filter(|&end| end > 0) {
+                Some(end) => {
+                    if !text.is_empty() {
+                        out.push(Inline::Text(std::mem::take(&mut text)));
+                    }
+                    out.push(Inline::Bold(body[..end].to_string()));
+                    rest = &body[end + 2..];
+                }
+                None => {
+                    text.push_str("**");
+                    rest = body;
+                }
+            }
+            continue;
+        }
+        if let Some(tail) = after.strip_prefix('*') {
+            text.push('*');
+            rest = tail;
+            continue;
+        }
         let ticks = after.len() - after.trim_start_matches('`').len();
         let body = &after[ticks..];
         match closing(body, ticks) {
@@ -525,6 +568,13 @@ fn lines(blocks: &[Block], width: usize) -> Vec<Vec<Piece>> {
             Block::Code { lang, lines } => code(lang.as_deref(), lines, width, theme, &mut out),
             Block::Table { header, rows } => table(header, rows, width, theme, &mut out),
             Block::Rule => out.push(vec![("─".repeat(width), theme.rule)]),
+            Block::Quote(inner) => {
+                for row in lines(inner, width.saturating_sub(2)) {
+                    let mut segs = vec![("│ ".to_string(), theme.quote)];
+                    segs.extend(row);
+                    out.push(segs);
+                }
+            }
         }
     }
     out
@@ -558,14 +608,25 @@ fn len(segs: &[Piece]) -> usize {
     segs.iter().map(|(s, _)| s.chars().count()).sum()
 }
 
-/// The words of a run of inlines: whitespace in text splits
-/// them, and inline code joins whatever touches it.
+/// The words of a run of inlines: whitespace in text or bold
+/// splits them, and inline code joins whatever touches it.
 fn words(text: &[Inline], theme: &Theme) -> Vec<Vec<Piece>> {
     let mut out = Vec::new();
     let mut word: Vec<Piece> = Vec::new();
     for inline in text {
         match inline {
             Inline::Code(c) => push_seg(&mut word, c.clone(), theme.code),
+            Inline::Bold(b) => {
+                for ch in b.chars() {
+                    if ch.is_whitespace() {
+                        if !word.is_empty() {
+                            out.push(std::mem::take(&mut word));
+                        }
+                    } else {
+                        push_seg(&mut word, ch.to_string(), Style::new().bold());
+                    }
+                }
+            }
             Inline::Text(t) => {
                 for ch in t.chars() {
                     if ch.is_whitespace() {
@@ -1150,5 +1211,126 @@ mod tests {
             )
         );
         assert!(lines[0][0].1.dim);
+    }
+
+    fn bold_pieces(lines: &[Row]) -> Vec<&str> {
+        lines
+            .iter()
+            .flatten()
+            .filter(|p| p.1.bold)
+            .map(|p| p.0.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn bold_in_a_paragraph_is_bold_and_the_text_around_it_is_not() {
+        assert_eq!(
+            parse("a **b `c`** d"),
+            [Block::Paragraph(vec![
+                Inline::Text("a ".into()),
+                Inline::Bold("b `c`".into()),
+                Inline::Text(" d".into()),
+            ])]
+        );
+        let lines = render("a **bold** d", 20);
+        assert_eq!(strings(&lines), padded(&["a bold d"], 20));
+        assert_eq!(bold_pieces(&lines), ["bold"]);
+    }
+
+    #[test]
+    fn bold_in_a_list_item_is_bold() {
+        let lines = render("- one **two** three", 30);
+        assert_eq!(strings(&lines), padded(&["• one two three"], 30));
+        assert_eq!(bold_pieces(&lines), ["• ", "two"]);
+    }
+
+    #[test]
+    fn bold_in_a_table_cell_is_bold() {
+        let lines = render("| a | b |\n|---|---|\n| **x** | y |", 20);
+        assert_eq!(bold_pieces(&lines[2..]), ["x"]);
+    }
+
+    #[test]
+    fn an_unclosed_bold_marker_stays_literal() {
+        assert_eq!(
+            parse("a **b and * c"),
+            [Block::Paragraph(vec![Inline::Text("a **b and * c".into())])]
+        );
+        assert_eq!(
+            parse("****"),
+            [Block::Paragraph(vec![Inline::Text("****".into())])]
+        );
+    }
+
+    #[test]
+    fn stars_inside_inline_code_stay_literal() {
+        assert_eq!(
+            parse("`**a**` and `x`"),
+            [Block::Paragraph(vec![
+                Inline::Code("**a**".into()),
+                Inline::Text(" and ".into()),
+                Inline::Code("x".into()),
+            ])]
+        );
+    }
+
+    #[test]
+    fn a_quote_holds_blocks_parsed_from_inside_it() {
+        assert_eq!(
+            parse("> one\n> two\n>\n> - a\n> - b\nafter"),
+            [
+                Block::Quote(vec![
+                    Block::Paragraph(vec![Inline::Text("one two".into())]),
+                    Block::List(vec![
+                        Item {
+                            depth: 0,
+                            number: None,
+                            text: vec![Inline::Text("a".into())],
+                        },
+                        Item {
+                            depth: 0,
+                            number: None,
+                            text: vec![Inline::Text("b".into())],
+                        },
+                    ]),
+                ]),
+                Block::Paragraph(vec![Inline::Text("after".into())]),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_quote_has_a_dim_gutter_and_fits_a_narrow_width() {
+        let lines = render("> one two three four five\n>\n> - six seven eight", 20);
+        assert_eq!(
+            strings(&lines),
+            padded(
+                &[
+                    "│ one two three four",
+                    "│ five",
+                    "│ ",
+                    "│ • six seven eight",
+                ],
+                20
+            )
+        );
+        for row in &lines {
+            assert_eq!(row[0].0, "│ ");
+            assert!(row[0].1.dim);
+        }
+        for width in [1, 2, 3, 20] {
+            let md = "> a `code` **b** word\n> ```\n> long code line\n> ```";
+            for line in strings(&render(md, width)) {
+                assert_eq!(line.chars().count(), width, "{line:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_text_paints_bold_and_the_quote_gutter() {
+        assert_eq!(text("a **b**", 10, true), ["a \x1b[1mb\x1b[0m"]);
+        assert_eq!(text("a **b**", 10, false), ["a b"]);
+        assert_eq!(text("> q", 10, true), ["\x1b[2m│ \x1b[0mq"]);
+        assert_eq!(text("> q", 10, false), ["│ q"]);
     }
 }

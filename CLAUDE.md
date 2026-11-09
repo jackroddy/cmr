@@ -2,8 +2,8 @@
 
 A single-crate cargo library: `cmr`, a markdown renderer for the command line.
 It parses a small subset of markdown (headings, paragraphs, lists, fenced code,
-tables, rules, inline code) and lays it out at a given width as rows of styled
-text. The name expands to command line markdown renderer.
+tables, rules, blockquotes, bold, inline code) and lays it out at a given width
+as rows of styled text. The name expands to command line markdown renderer.
 
 Design rationale that the code does not state lives in foam's memories, and
 pending work lives in foam's issues. `foam prime` prints both at session start.

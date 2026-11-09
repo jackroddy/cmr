@@ -13,3 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lists, fenced code with highlighting, tables, rules and inline code, and lays
   them out as styled rows of an exact width, or as plain or ANSI-coloured
   strings.
+- Bold text between `**` markers in paragraphs, list items and table cells.
+  Bold does not nest, and an unclosed `**` stays as typed.
+- Blockquotes from lines that start with `> `. The inside is read as markdown
+  again and drawn behind a dim `│ ` gutter.
