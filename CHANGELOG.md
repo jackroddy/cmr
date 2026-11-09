@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Links written as `[text](target)` or `[text](target "title")`, with a
+  double or single quoted title. Only the text is drawn, underlined, and its
+  `Style` carries a `link` index. `links` returns the `Link` targets and titles
+  in document order, so `links[i]` belongs to `Some(i)`. `text` also wraps the
+  link in an OSC 8 hyperlink when `color` is set. The text is plain: bold and
+  code inside it stay literal. Autolinks and images stay as typed.
+
 ## [0.1.0] - 2026-11-08
 
 ### Added

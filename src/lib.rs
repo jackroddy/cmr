@@ -1,6 +1,6 @@
 //! A small markdown subset, parsed into blocks and laid out as
 //! lines of an exact width: headings, paragraphs, lists, fenced
-//! code, tables, rules, quotes, bold and inline code. Everything else stays
+//! code, tables, rules, quotes, bold, inline code and links. Everything else stays
 //! literal text.
 
 mod hl;
@@ -35,6 +35,8 @@ pub struct Style {
     pub bold: bool,
     pub dim: bool,
     pub underline: bool,
+    /// The index into the document's links, for link text.
+    pub link: Option<usize>,
 }
 
 impl Style {
@@ -44,6 +46,7 @@ impl Style {
             bold: false,
             dim: false,
             underline: false,
+            link: None,
         }
     }
 
@@ -73,6 +76,7 @@ impl Style {
             bold: self.bold || other.bold,
             dim: self.dim || other.dim,
             underline: self.underline || other.underline,
+            link: other.link.or(self.link),
         }
     }
 }
@@ -89,6 +93,20 @@ pub enum Inline {
     Text(String),
     Code(String),
     Bold(String),
+    /// Link text, drawn in place of `[text](target)`.
+    Link {
+        text: String,
+        /// Where `link` sits in the document's links.
+        index: usize,
+        link: Link,
+    },
+}
+
+/// Where a link points.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Link {
+    pub target: String,
+    pub title: Option<String>,
 }
 
 /// One entry of a list.
@@ -126,6 +144,7 @@ struct Theme {
     heading: Style,
     header: Style,
     code: Style,
+    link: Style,
     lang: Style,
     bullet: Style,
     rule: Style,
@@ -140,6 +159,7 @@ const THEME: Theme = Theme {
     heading: Style::new().bold(),
     header: Style::new().bold(),
     code: Style::new().fg(Color::Cyan),
+    link: Style::new().underline(),
     lang: Style::new().dim(),
     bullet: Style::new().bold(),
     rule: Style::new().dim(),
@@ -161,6 +181,39 @@ pub fn render(text: &str, width: usize) -> Vec<Row> {
 
 /// The blocks of `text`, read a line at a time.
 pub fn parse(text: &str) -> Vec<Block> {
+    parse_from(text, &mut 0)
+}
+
+/// The links of `blocks` in document order, so that `links[i]` is
+/// the link whose `Style::link` is `Some(i)`.
+pub fn links(blocks: &[Block]) -> Vec<Link> {
+    let mut out = Vec::new();
+    for block in blocks {
+        match block {
+            Block::Heading { text, .. } | Block::Paragraph(text) => collect_links(text, &mut out),
+            Block::List(items) => items.iter().for_each(|i| collect_links(&i.text, &mut out)),
+            Block::Table { header, rows } => {
+                for cell in header.iter().chain(rows.iter().flatten()) {
+                    collect_links(cell, &mut out);
+                }
+            }
+            Block::Quote(inner) => out.extend(links(inner)),
+            Block::Code { .. } | Block::Rule => {}
+        }
+    }
+    out
+}
+
+fn collect_links(text: &[Inline], out: &mut Vec<Link>) {
+    for inline in text {
+        if let Inline::Link { link, .. } = inline {
+            out.push(link.clone());
+        }
+    }
+}
+
+/// `parse`, numbering links from `*next`.
+fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
     let lines: Vec<&str> = text.lines().collect();
     let mut blocks = Vec::new();
     let mut para: Vec<Inline> = Vec::new();
@@ -176,7 +229,7 @@ pub fn parse(text: &str) -> Vec<Block> {
                 inner.push(rest);
                 i += 1;
             }
-            blocks.push(Block::Quote(parse(&inner.join("\n"))));
+            blocks.push(Block::Quote(parse_from(&inner.join("\n"), next)));
             continue;
         }
         if let Some(lang) = fence(line) {
@@ -193,11 +246,11 @@ pub fn parse(text: &str) -> Vec<Block> {
         }
         if line.contains('|') && lines.get(i + 1).is_some_and(|l| delimiter_row(l)) {
             flush(&mut blocks, &mut para, &mut list);
-            let header = cells(line);
+            let header = cells(line, next);
             i += 2;
             let mut rows = Vec::new();
             while i < lines.len() && lines[i].contains('|') {
-                rows.push(cells(lines[i]));
+                rows.push(cells(lines[i], next));
                 i += 1;
             }
             blocks.push(Block::Table { header, rows });
@@ -207,7 +260,7 @@ pub fn parse(text: &str) -> Vec<Block> {
             flush(&mut blocks, &mut para, &mut list);
             blocks.push(Block::Heading {
                 level,
-                text: inlines(rest),
+                text: inlines(rest, next),
             });
             i += 1;
             continue;
@@ -218,7 +271,7 @@ pub fn parse(text: &str) -> Vec<Block> {
             i += 1;
             continue;
         }
-        if let Some((item, col)) = list_item(line) {
+        if let Some((item, col)) = list_item(line, next) {
             flush_paragraph(&mut blocks, &mut para);
             // a top-level item of the other kind starts a new list
             let other_kind = item.depth == 0
@@ -240,13 +293,13 @@ pub fn parse(text: &str) -> Vec<Block> {
         }
         if let Some(last) = list.last_mut() {
             if indent(line) >= text_column {
-                join(&mut last.text, inlines(line.trim()));
+                join(&mut last.text, inlines(line.trim(), next));
                 i += 1;
                 continue;
             }
             flush(&mut blocks, &mut para, &mut list);
         }
-        join(&mut para, inlines(line.trim()));
+        join(&mut para, inlines(line.trim(), next));
         i += 1;
     }
     flush(&mut blocks, &mut para, &mut list);
@@ -349,10 +402,10 @@ fn split_cells(line: &str) -> Vec<&str> {
     t.split('|').collect()
 }
 
-fn cells(line: &str) -> Vec<Vec<Inline>> {
+fn cells(line: &str, next: &mut usize) -> Vec<Vec<Inline>> {
     split_cells(line)
         .into_iter()
-        .map(|c| inlines(c.trim()))
+        .map(|c| inlines(c.trim(), next))
         .collect()
 }
 
@@ -365,7 +418,7 @@ fn indent(line: &str) -> usize {
 }
 
 /// A list item and the column its text starts at.
-fn list_item(line: &str) -> Option<(Item, usize)> {
+fn list_item(line: &str, next: &mut usize) -> Option<(Item, usize)> {
     let lead = indent(line);
     let rest = line.trim_start();
     let (number, after) = if let Some(after) = rest
@@ -386,21 +439,44 @@ fn list_item(line: &str) -> Option<(Item, usize)> {
     let item = Item {
         depth: lead / 2,
         number,
-        text: inlines(text.trim_end()),
+        text: inlines(text.trim_end(), next),
     };
     Some((item, lead + marker + gap))
 }
 
 /// The inlines of one line: a run of backticks opens code that
 /// the next run of the same length closes, and `**` opens bold
-/// that the next `**` closes. An unmatched run is text.
-fn inlines(line: &str) -> Vec<Inline> {
+/// that the next `**` closes. A link is `[text](target)` or
+/// `[text](target "title")`, numbered from `*next`. An unmatched
+/// run or bracket is text.
+fn inlines(line: &str, next: &mut usize) -> Vec<Inline> {
     let mut out = Vec::new();
     let mut text = String::new();
     let mut rest = line;
-    while let Some(start) = rest.find(['`', '*']) {
+    while let Some(start) = rest.find(['`', '*', '[']) {
         text.push_str(&rest[..start]);
         let after = &rest[start..];
+        if let Some(inside) = after.strip_prefix('[') {
+            match link(after) {
+                Some((label, link, tail)) => {
+                    if !text.is_empty() {
+                        out.push(Inline::Text(std::mem::take(&mut text)));
+                    }
+                    out.push(Inline::Link {
+                        text: label.to_string(),
+                        index: *next,
+                        link,
+                    });
+                    *next += 1;
+                    rest = tail;
+                }
+                None => {
+                    text.push('[');
+                    rest = inside;
+                }
+            }
+            continue;
+        }
         if let Some(body) = after.strip_prefix("**") {
             match body.find("**").filter(|&end| end > 0) {
                 Some(end) => {
@@ -447,6 +523,37 @@ fn inlines(line: &str) -> Vec<Inline> {
     out
 }
 
+/// The text, link and remainder of a link at the start of `s`. The
+/// text is plain, so it holds no bracket. The target ends at
+/// whitespace or `)`, and a title may be in either kind of quote.
+fn link(s: &str) -> Option<(&str, Link, &str)> {
+    let close = s.find(']')?;
+    let label = &s[1..close];
+    if label.is_empty() || label.contains('[') {
+        return None;
+    }
+    let args = s[close + 1..].strip_prefix('(')?.trim_start();
+    let end = args.find(|c: char| c.is_whitespace() || c == ')')?;
+    let target = &args[..end];
+    if target.is_empty() {
+        return None;
+    }
+    let mut rest = args[end..].trim_start();
+    let mut title = None;
+    if let Some(quote) = rest.chars().next().filter(|&c| c == '"' || c == '\'') {
+        let body = &rest[1..];
+        let stop = body.find(quote)?;
+        title = Some(body[..stop].to_string());
+        rest = body[stop + 1..].trim_start();
+    }
+    let tail = rest.strip_prefix(')')?;
+    let link = Link {
+        target: target.to_string(),
+        title,
+    };
+    Some((label, link, tail))
+}
+
 /// Where in `s` a run of exactly `ticks` backticks starts.
 fn closing(s: &str, ticks: usize) -> Option<usize> {
     let mut at = 0;
@@ -474,7 +581,9 @@ pub fn layout(blocks: &[Block], width: usize) -> Vec<Row> {
 /// line, trailing blanks dropped, and the screen's styles as
 /// escape codes when `color`.
 pub fn text(text: &str, width: usize, color: bool) -> Vec<String> {
-    lines(&parse(text), width)
+    let blocks = parse(text);
+    let links = links(&blocks);
+    lines(&blocks, width)
         .into_iter()
         .map(|segs| {
             let mut merged = Vec::new();
@@ -484,10 +593,24 @@ pub fn text(text: &str, width: usize, color: bool) -> Vec<String> {
             let mut out = String::new();
             for (s, style) in trimmed(merged, color) {
                 let codes = if color { sgr(style) } else { String::new() };
+                // a target holding a control character could end the
+                // escape early, so such a link is drawn without one
+                let target = style
+                    .link
+                    .filter(|_| color)
+                    .and_then(|i| links.get(i))
+                    .map(|l| l.target.as_str())
+                    .filter(|t| !t.chars().any(char::is_control));
+                if let Some(target) = target {
+                    out.push_str(&format!("\x1b]8;;{target}\x1b\\"));
+                }
                 if codes.is_empty() {
                     out.push_str(&s);
                 } else {
                     out.push_str(&format!("\x1b[{codes}m{s}\x1b[0m"));
+                }
+                if target.is_some() {
+                    out.push_str("\x1b]8;;\x1b\\");
                 }
             }
             out
@@ -608,35 +731,34 @@ fn len(segs: &[Piece]) -> usize {
     segs.iter().map(|(s, _)| s.chars().count()).sum()
 }
 
-/// The words of a run of inlines: whitespace in text or bold
-/// splits them, and inline code joins whatever touches it.
+/// The words of a run of inlines: whitespace in text, bold or
+/// link text splits them, and inline code joins whatever touches it.
 fn words(text: &[Inline], theme: &Theme) -> Vec<Vec<Piece>> {
     let mut out = Vec::new();
     let mut word: Vec<Piece> = Vec::new();
     for inline in text {
-        match inline {
-            Inline::Code(c) => push_seg(&mut word, c.clone(), theme.code),
-            Inline::Bold(b) => {
-                for ch in b.chars() {
-                    if ch.is_whitespace() {
-                        if !word.is_empty() {
-                            out.push(std::mem::take(&mut word));
-                        }
-                    } else {
-                        push_seg(&mut word, ch.to_string(), Style::new().bold());
-                    }
-                }
+        let (run, style) = match inline {
+            Inline::Code(c) => {
+                push_seg(&mut word, c.clone(), theme.code);
+                continue;
             }
-            Inline::Text(t) => {
-                for ch in t.chars() {
-                    if ch.is_whitespace() {
-                        if !word.is_empty() {
-                            out.push(std::mem::take(&mut word));
-                        }
-                    } else {
-                        push_seg(&mut word, ch.to_string(), Style::new());
-                    }
+            Inline::Bold(b) => (b, Style::new().bold()),
+            Inline::Text(t) => (t, Style::new()),
+            Inline::Link { text, index, .. } => {
+                let style = Style {
+                    link: Some(*index),
+                    ..theme.link
+                };
+                (text, style)
+            }
+        };
+        for ch in run.chars() {
+            if ch.is_whitespace() {
+                if !word.is_empty() {
+                    out.push(std::mem::take(&mut word));
                 }
+            } else {
+                push_seg(&mut word, ch.to_string(), style);
             }
         }
     }
@@ -1332,5 +1454,122 @@ mod tests {
         assert_eq!(text("a **b**", 10, false), ["a b"]);
         assert_eq!(text("> q", 10, true), ["\x1b[2m│ \x1b[0mq"]);
         assert_eq!(text("> q", 10, false), ["│ q"]);
+    }
+
+    fn link_pieces(row: &Row) -> Vec<(&str, Option<usize>)> {
+        row.iter()
+            .filter(|p| p.1.link.is_some())
+            .map(|p| (p.0.as_str(), p.1.link))
+            .collect()
+    }
+
+    #[test]
+    fn a_link_draws_its_text_underlined_and_not_its_target() {
+        let lines = render("see [the docs](https://x.test/a) now", 30);
+        assert_eq!(strings(&lines), padded(&["see the docs now"], 30));
+        let pieces = link_pieces(&lines[0]);
+        assert_eq!(pieces, [("the", Some(0)), ("docs", Some(0))]);
+        assert!(
+            lines[0]
+                .iter()
+                .filter(|p| p.1.link.is_some())
+                .all(|p| p.1.underline)
+        );
+        let links = links(&parse("see [the docs](https://x.test/a) now"));
+        assert_eq!(
+            links,
+            [Link {
+                target: "https://x.test/a".into(),
+                title: None
+            }]
+        );
+    }
+
+    #[test]
+    fn a_link_title_in_either_quote_is_kept_and_not_drawn() {
+        let md = "[a](x \"one two\") [b](y 'three')";
+        assert_eq!(strings(&render(md, 10)), padded(&["a b"], 10));
+        let titles: Vec<Option<String>> = links(&parse(md)).into_iter().map(|l| l.title).collect();
+        assert_eq!(titles, [Some("one two".into()), Some("three".into())]);
+    }
+
+    #[test]
+    fn links_work_in_a_list_item_a_table_cell_and_a_quote() {
+        let md = "- [a](1)\n\n| h | [b](2) |\n|---|---|\n| [c](3) | d |\n\n> [e](4)";
+        let targets: Vec<String> = links(&parse(md)).into_iter().map(|l| l.target).collect();
+        assert_eq!(targets, ["1", "2", "3", "4"]);
+        let shown: String = strings(&render(md, 20)).join("\n");
+        for text in ["• a", "b", "c", "│ e"] {
+            assert!(shown.contains(text), "{text:?} in {shown:?}");
+        }
+        assert!(!shown.contains('('));
+        let rows = render(md, 20);
+        let indices: Vec<usize> = rows.iter().flatten().filter_map(|p| p.1.link).collect();
+        assert_eq!(indices, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn unmatched_brackets_and_broken_links_stay_literal() {
+        for md in [
+            "[a] (x)",
+            "[a](x",
+            "[a(x)",
+            "[](x)",
+            "[a]()",
+            "[a](x \"t)",
+            "[[a]](x) ]",
+            "a ] b [",
+        ] {
+            let lines = strings(&render(md, 30));
+            assert_eq!(lines[0].trim_end(), md, "{md}");
+            assert!(links(&parse(md)).is_empty(), "{md}");
+        }
+    }
+
+    #[test]
+    fn a_wrapped_link_keeps_its_index_on_every_piece() {
+        let lines = render("[one two three four](t) and [five](u)", 9);
+        let first: Vec<_> = lines.iter().flat_map(link_pieces).collect();
+        assert_eq!(
+            first,
+            [
+                ("one", Some(0)),
+                ("two", Some(0)),
+                ("three", Some(0)),
+                ("four", Some(0)),
+                ("five", Some(1)),
+            ]
+        );
+        let long = render("[abcdefghij](t)", 4);
+        let cut: Vec<_> = long.iter().flat_map(link_pieces).collect();
+        assert_eq!(cut, [("abcd", Some(0)), ("efgh", Some(0)), ("ij", Some(0))]);
+    }
+
+    #[test]
+    fn the_links_list_follows_document_order() {
+        let md = "[a](1) [b](2)\n\n- [c](3)\n\n> [d](4)\n\n[e](5)";
+        let targets: Vec<String> = links(&parse(md)).into_iter().map(|l| l.target).collect();
+        assert_eq!(targets, ["1", "2", "3", "4", "5"]);
+        let found: Vec<usize> = render(md, 30)
+            .iter()
+            .flatten()
+            .filter_map(|p| p.1.link)
+            .collect();
+        assert_eq!(found, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn terminal_text_underlines_a_link_and_hyperlinks_it_only_in_color() {
+        assert_eq!(text("a [b](u) c", 10, false), ["a b c"]);
+        assert_eq!(
+            text("a [b](u) c", 10, true),
+            ["a \x1b]8;;u\x1b\\\x1b[4mb\x1b[0m\x1b]8;;\x1b\\ c"]
+        );
+    }
+
+    #[test]
+    fn a_link_target_with_a_control_character_gets_no_hyperlink() {
+        let md = "[b](u\x07v)";
+        assert_eq!(text(md, 10, true), ["\x1b[4mb\x1b[0m"]);
     }
 }

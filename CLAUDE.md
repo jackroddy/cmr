@@ -2,7 +2,7 @@
 
 A single-crate cargo library: `cmr`, a markdown renderer for the command line.
 It parses a small subset of markdown (headings, paragraphs, lists, fenced code,
-tables, rules, blockquotes, bold, inline code) and lays it out at a given width
+tables, rules, blockquotes, bold, inline code, links) and lays it out at a given width
 as rows of styled text. The name expands to command line markdown renderer.
 
 Design rationale that the code does not state lives in foam's memories, and
