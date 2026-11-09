@@ -1,0 +1,28 @@
+{
+  "id": "cmr-b12951",
+  "title": "Does text() emit OSC 8 hyperlinks for links?",
+  "body": "`text()` in `src/lib.rs` turns laid-out rows into ANSI strings. Since 5ee4fd2 it wraps each link's text in an OSC 8 hyperlink escape (`ESC ] 8 ; ; target ESC \\` … `ESC ] 8 ; ; ESC \\`) when `color` is true, and skips a target that holds a control character. Plain output has no escapes. foam's CLI prints markdown through `text()`, so a link in a foam issue becomes a clickable hyperlink in terminals that support OSC 8. foam's writing rules discourage links today.\n\n## Options\n\n- Keep OSC 8 on whenever colour is on. Terminals without support ignore the escape.\n- Make it a separate switch, so an app can have colour without hyperlinks.\n- Drop OSC 8 and draw link text underlined only.\n\nJack decides. Nothing in foam's current issues contains a link, so foam's output does not change either way today.",
+  "type": "decision",
+  "status": "open",
+  "priority": 2,
+  "labels": [],
+  "parent": null,
+  "blocked_by": [],
+  "related": [],
+  "assignee": null,
+  "lease_expires": null,
+  "defer_until": null,
+  "created_at": "2026-11-09T20:32:49.233597348Z",
+  "updated_at": "2026-11-09T20:32:49.233597348Z",
+  "closed_at": null,
+  "close_reason": null,
+  "resolution": null,
+  "notes": [],
+  "stamps": {
+    "created": {
+      "commit": "5ee4fd2",
+      "branch": "dev"
+    },
+    "closed": null
+  }
+}
