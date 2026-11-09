@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-08
+
 ### Added
 
 - A markdown renderer with no dependencies. It reads headings, paragraphs,
@@ -17,3 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Bold does not nest, and an unclosed `**` stays as typed.
 - Blockquotes from lines that start with `> `. The inside is read as markdown
   again and drawn behind a dim `│ ` gutter.
+
+[Unreleased]: https://github.com/jackroddy/cmr/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/jackroddy/cmr/releases/tag/v0.1.0

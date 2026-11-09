@@ -7,6 +7,6 @@ repository = "https://github.com/jackroddy/cmr"
 license = "MIT OR Apache-2.0"
 description = "a markdown renderer for the command line"
 readme = "README.md"
-exclude = ["CLAUDE.md"]
+exclude = ["CLAUDE.md", ".claude", "tmp-claude"]
 
 [dependencies]
