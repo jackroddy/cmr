@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   link in an OSC 8 hyperlink when `color` is set. The text is plain: bold and
   code inside it stay literal. Autolinks and images stay as typed.
 
+### Changed
+
+- A fenced code block closes only at a line of at least as many backticks as
+  opened it, and nothing else. A block opened with four backticks now holds
+  a three-backtick fence as text, where before it ended there.
+
 ## [0.1.0] - 2026-11-08
 
 ### Added

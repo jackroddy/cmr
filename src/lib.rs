@@ -232,11 +232,11 @@ fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
             blocks.push(Block::Quote(parse_from(&inner.join("\n"), next)));
             continue;
         }
-        if let Some(lang) = fence(line) {
+        if let Some((ticks, lang)) = fence(line) {
             flush(&mut blocks, &mut para, &mut list);
             let mut code = Vec::new();
             i += 1;
-            while i < lines.len() && !closes_fence(lines[i]) {
+            while i < lines.len() && !closes_fence(lines[i], ticks) {
                 code.push(lines[i].replace('\t', "    "));
                 i += 1;
             }
@@ -366,25 +366,26 @@ fn rule(line: &str) -> bool {
     line.len() >= 3 && line.bytes().all(|b| b == b'-')
 }
 
-/// The language of a line that opens a fence, `Some(None)` for a
-/// fence without one.
-fn fence(line: &str) -> Option<Option<String>> {
+/// The backticks and the language of a line that opens a fence, with
+/// `None` for a fence without a language.
+fn fence(line: &str) -> Option<(usize, Option<String>)> {
     let rest = line.trim_start_matches(' ');
     if line.len() - rest.len() > 3 {
         return None;
     }
-    let rest = rest.strip_prefix("```")?;
-    Some(
-        rest.trim_start_matches('`')
-            .split_whitespace()
-            .next()
-            .map(str::to_string),
-    )
+    let info = rest.trim_start_matches('`');
+    let ticks = rest.len() - info.len();
+    if ticks < 3 {
+        return None;
+    }
+    Some((ticks, info.split_whitespace().next().map(str::to_string)))
 }
 
-fn closes_fence(line: &str) -> bool {
+/// Whether `line` closes a fence opened with `ticks` backticks: a line of at
+/// least that many backticks and nothing else.
+fn closes_fence(line: &str, ticks: usize) -> bool {
     let t = line.trim();
-    t.starts_with("```") && t.trim_start_matches('`').is_empty()
+    t.len() >= ticks && t.bytes().all(|b| b == b'`')
 }
 
 fn delimiter_row(line: &str) -> bool {
@@ -1246,6 +1247,20 @@ mod tests {
         assert!(lines[0][0].1.dim);
         assert_eq!(lines[1][0].0, "│ ");
         assert!(lines[1][0].1.dim);
+    }
+
+    #[test]
+    fn a_fence_closes_only_at_a_run_of_backticks_as_long_as_its_opening() {
+        let text = "````markdown\nSome text.\n```rust\nfn main() {}\n```\n````\nafter";
+        let blocks = parse(text);
+        assert_eq!(blocks.len(), 2, "{blocks:?}");
+        let Block::Code { lang, lines } = &blocks[0] else {
+            panic!("the first block is the fence");
+        };
+        assert_eq!(lang.as_deref(), Some("markdown"));
+        assert_eq!(lines, &["Some text.", "```rust", "fn main() {}", "```"]);
+        assert!(matches!(&blocks[1], Block::Paragraph(_)));
+        assert_eq!(parse("```\na\n````\nb").len(), 2);
     }
 
     #[test]
