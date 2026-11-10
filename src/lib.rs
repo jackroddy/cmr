@@ -131,6 +131,9 @@ pub enum Block {
     Code {
         lang: Option<String>,
         lines: Vec<String>,
+        /// Whether a line wider than the block wraps onto
+        /// continuation rows, where otherwise it is cut.
+        wrap: bool,
     },
     Table {
         header: Vec<Vec<Inline>>,
@@ -240,7 +243,11 @@ fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
                 code.push(lines[i].replace('\t', "    "));
                 i += 1;
             }
-            blocks.push(Block::Code { lang, lines: code });
+            blocks.push(Block::Code {
+                lang,
+                lines: code,
+                wrap: false,
+            });
             i += 1;
             continue;
         }
@@ -689,7 +696,9 @@ fn lines(blocks: &[Block], width: usize) -> Vec<Vec<Piece>> {
             Block::Heading { level, text } => heading_lines(*level, text, width, theme, &mut out),
             Block::Paragraph(text) => out.extend(wrap(&words(text, theme), width)),
             Block::List(items) => list(items, width, theme, &mut out),
-            Block::Code { lang, lines } => code(lang.as_deref(), lines, width, theme, &mut out),
+            Block::Code { lang, lines, wrap } => {
+                code(lang.as_deref(), lines, *wrap, width, theme, &mut out)
+            }
             Block::Table { header, rows } => table(header, rows, width, theme, &mut out),
             Block::Rule => out.push(vec![("─".repeat(width), theme.rule)]),
             Block::Quote(inner) => {
@@ -877,6 +886,7 @@ fn siblings(items: &[Item], k: usize) -> impl Iterator<Item = &Item> {
 fn code(
     lang: Option<&str>,
     lines: &[String],
+    wrap: bool,
     width: usize,
     theme: &Theme,
     out: &mut Vec<Vec<Piece>>,
@@ -907,6 +917,10 @@ fn code(
                 .collect(),
             None => vec![(line.clone(), Style::new())],
         };
+        if wrap && len(&segs) > inner {
+            wrapped_code(segs, inner.max(1), theme, out);
+            continue;
+        }
         let mut shown = vec![("│ ".to_string(), theme.rule)];
         if len(&segs) > inner {
             let mut room = inner.saturating_sub(1);
@@ -921,6 +935,30 @@ fn code(
         }
         out.push(shown);
     }
+}
+
+/// One highlighted line split into rows of `inner` characters,
+/// each row after the first under a `┆ ` gutter.
+fn wrapped_code(segs: Vec<Piece>, inner: usize, theme: &Theme, out: &mut Vec<Vec<Piece>>) {
+    let mut row = vec![("│ ".to_string(), theme.rule)];
+    let mut room = inner;
+    for (s, style) in segs {
+        let mut rest = s.as_str();
+        while !rest.is_empty() {
+            if room == 0 {
+                out.push(std::mem::replace(
+                    &mut row,
+                    vec![("┆ ".to_string(), theme.rule)],
+                ));
+                room = inner;
+            }
+            let end = rest.char_indices().nth(room).map_or(rest.len(), |(i, _)| i);
+            room -= rest[..end].chars().count();
+            push_seg(&mut row, rest[..end].to_string(), style);
+            rest = &rest[end..];
+        }
+    }
+    out.push(row);
 }
 
 fn table(
@@ -1254,7 +1292,7 @@ mod tests {
         let text = "````markdown\nSome text.\n```rust\nfn main() {}\n```\n````\nafter";
         let blocks = parse(text);
         assert_eq!(blocks.len(), 2, "{blocks:?}");
-        let Block::Code { lang, lines } = &blocks[0] else {
+        let Block::Code { lang, lines, .. } = &blocks[0] else {
             panic!("the first block is the fence");
         };
         assert_eq!(lang.as_deref(), Some("markdown"));
@@ -1282,6 +1320,38 @@ mod tests {
     }
 
     #[test]
+    fn a_wrapped_fence_splits_long_lines_under_a_continuation_gutter() {
+        let mut blocks = parse("```\nshort\na line far too long\n```");
+        let Block::Code { wrap, .. } = &mut blocks[0] else {
+            panic!("the block is the fence");
+        };
+        *wrap = true;
+        let lines = layout(&blocks, 10);
+        assert_eq!(
+            strings(&lines),
+            ["│ short   ", "│ a line f", "┆ ar too l", "┆ ong     "]
+        );
+        assert!(lines[2][0].1.dim);
+    }
+
+    #[test]
+    fn a_wrapped_line_keeps_its_colours_across_rows() {
+        let mut blocks = parse("```rust\nlet x = \"abcdefgh\";\n```");
+        let Block::Code { wrap, .. } = &mut blocks[0] else {
+            panic!("the block is the fence");
+        };
+        *wrap = true;
+        let lines = layout(&blocks, 12);
+        assert_eq!(
+            strings(&lines),
+            ["┌ rust      ", "│ let x = \"a", "┆ bcdefgh\"; "]
+        );
+        assert_eq!(lines[1][1], ("let".to_string(), THEME.keyword));
+        let tail = lines[2].iter().find(|p| p.0.starts_with("bcd")).unwrap();
+        assert_eq!(tail.1, THEME.string);
+    }
+
+    #[test]
     fn an_unclosed_fence_runs_to_the_end() {
         assert_eq!(
             parse("text\n```sh\nls\n\n- not a list"),
@@ -1290,6 +1360,7 @@ mod tests {
                 Block::Code {
                     lang: Some("sh".into()),
                     lines: vec!["ls".into(), "".into(), "- not a list".into()],
+                    wrap: false,
                 },
             ]
         );

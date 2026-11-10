@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in document order, so `links[i]` belongs to `Some(i)`. `text` also wraps the
   link in an OSC 8 hyperlink when `color` is set. The text is plain: bold and
   code inside it stay literal. Autolinks and images stay as typed.
+- `Block::Code` has a `wrap` field, which the parser sets to false. When an
+  app sets it, `layout` splits a line wider than the block across rows after
+  highlighting, so each piece keeps its colour. A continuation row has `┆` in
+  the gutter where the first row has `│`.
 
 ### Changed
 
