@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   app sets it, `layout` splits a line wider than the block across rows after
   highlighting, so each piece keeps its colour. A continuation row has `┆` in
   the gutter where the first row has `│`.
+- `Block::Code` has a `tab` field. It holds the name from `tab="<name>"` on
+  the opening line, after the language. The name may contain spaces.
+  `layout` does not draw it.
 
 ### Changed
 

@@ -134,6 +134,8 @@ pub enum Block {
         /// Whether a line wider than the block wraps onto
         /// continuation rows, where otherwise it is cut.
         wrap: bool,
+        /// The name given by `tab="<name>"` after the language.
+        tab: Option<String>,
     },
     Table {
         header: Vec<Vec<Inline>>,
@@ -235,7 +237,7 @@ fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
             blocks.push(Block::Quote(parse_from(&inner.join("\n"), next)));
             continue;
         }
-        if let Some((ticks, lang)) = fence(line) {
+        if let Some((ticks, lang, tab)) = fence(line) {
             flush(&mut blocks, &mut para, &mut list);
             let mut code = Vec::new();
             i += 1;
@@ -247,6 +249,7 @@ fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
                 lang,
                 lines: code,
                 wrap: false,
+                tab,
             });
             i += 1;
             continue;
@@ -373,9 +376,9 @@ fn rule(line: &str) -> bool {
     line.len() >= 3 && line.bytes().all(|b| b == b'-')
 }
 
-/// The backticks and the language of a line that opens a fence, with
-/// `None` for a fence without a language.
-fn fence(line: &str) -> Option<(usize, Option<String>)> {
+/// The backticks, the language and the tab name of a line that opens a
+/// fence, with `None` for a fence without a language or a tab name.
+fn fence(line: &str) -> Option<(usize, Option<String>, Option<String>)> {
     let rest = line.trim_start_matches(' ');
     if line.len() - rest.len() > 3 {
         return None;
@@ -385,7 +388,12 @@ fn fence(line: &str) -> Option<(usize, Option<String>)> {
     if ticks < 3 {
         return None;
     }
-    Some((ticks, info.split_whitespace().next().map(str::to_string)))
+    let lang = info.split_whitespace().next().map(str::to_string);
+    let tab = info
+        .split_once(" tab=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(name, _)| name.to_string());
+    Some((ticks, lang, tab))
 }
 
 /// Whether `line` closes a fence opened with `ticks` backticks: a line of at
@@ -696,9 +704,9 @@ fn lines(blocks: &[Block], width: usize) -> Vec<Vec<Piece>> {
             Block::Heading { level, text } => heading_lines(*level, text, width, theme, &mut out),
             Block::Paragraph(text) => out.extend(wrap(&words(text, theme), width)),
             Block::List(items) => list(items, width, theme, &mut out),
-            Block::Code { lang, lines, wrap } => {
-                code(lang.as_deref(), lines, *wrap, width, theme, &mut out)
-            }
+            Block::Code {
+                lang, lines, wrap, ..
+            } => code(lang.as_deref(), lines, *wrap, width, theme, &mut out),
             Block::Table { header, rows } => table(header, rows, width, theme, &mut out),
             Block::Rule => out.push(vec![("─".repeat(width), theme.rule)]),
             Block::Quote(inner) => {
@@ -1302,6 +1310,32 @@ mod tests {
     }
 
     #[test]
+    fn a_fence_names_its_tab_after_the_language() {
+        let tab = |text: &str| match &parse(text)[0] {
+            Block::Code { lang, tab, .. } => (lang.clone(), tab.clone()),
+            _ => panic!("the block is the fence"),
+        };
+        let owned = (Some("rust".into()), Some("owned".into()));
+        assert_eq!(tab("```rust tab=\"owned\"\nx\n```"), owned);
+        assert_eq!(tab("```rust other tab=\"owned\" more\nx\n```"), owned);
+        assert_eq!(
+            tab("```rust tab=\"two words\"\nx\n```").1.as_deref(),
+            Some("two words")
+        );
+        assert_eq!(tab("```rust\nx\n```"), (Some("rust".into()), None));
+        assert_eq!(tab("```rust tab=owned\nx\n```").1, None);
+        assert_eq!(tab("```rust tab=\"open\nx\n```").1, None);
+    }
+
+    #[test]
+    fn a_tab_name_is_not_drawn() {
+        assert_eq!(
+            render("```rust tab=\"owned\"\nlet\n```", 10),
+            render("```rust\nlet\n```", 10)
+        );
+    }
+
+    #[test]
     fn a_known_fence_highlights_and_an_unknown_one_stays_plain() {
         let lines = render("```rust\nfn main() {}\n```", 16);
         let fun = lines[1].iter().find(|p| p.0 == "fn").unwrap();
@@ -1361,6 +1395,7 @@ mod tests {
                     lang: Some("sh".into()),
                     lines: vec!["ls".into(), "".into(), "- not a list".into()],
                     wrap: false,
+                    tab: None,
                 },
             ]
         );
