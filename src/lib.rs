@@ -122,10 +122,12 @@ const GUTTERED: Mark = Mark {
 pub enum Inline {
     Text(String),
     Code(String),
-    Bold(String),
-    /// Link text, drawn in place of `[text](target)`.
+    /// Text between `**` markers, which may hold inline code and links.
+    Bold(Vec<Inline>),
+    /// Link text, drawn in place of `[text](target)`. The text may hold
+    /// bold and inline code.
     Link {
-        text: String,
+        text: Vec<Inline>,
         /// Where `link` sits in the document's links.
         index: usize,
         link: Link,
@@ -241,8 +243,10 @@ pub fn links(blocks: &[Block]) -> Vec<Link> {
 
 fn collect_links(text: &[Inline], out: &mut Vec<Link>) {
     for inline in text {
-        if let Inline::Link { link, .. } = inline {
-            out.push(link.clone());
+        match inline {
+            Inline::Bold(inner) => collect_links(inner, out),
+            Inline::Link { link, .. } => out.push(link.clone()),
+            Inline::Text(_) | Inline::Code(_) => {}
         }
     }
 }
@@ -493,7 +497,8 @@ fn list_item(line: &str, next: &mut usize) -> Option<(Item, usize)> {
 /// The inlines of one line: a run of backticks opens code that
 /// the next run of the same length closes, and `**` opens bold
 /// that the next `**` closes. A link is `[text](target)` or
-/// `[text](target "title")`, numbered from `*next`. An unmatched
+/// `[text](target "title")`, numbered from `*next`. Bold and link
+/// text are read again for the inlines inside them. An unmatched
 /// run or bracket is text.
 fn inlines(line: &str, next: &mut usize) -> Vec<Inline> {
     let mut out = Vec::new();
@@ -508,12 +513,13 @@ fn inlines(line: &str, next: &mut usize) -> Vec<Inline> {
                     if !text.is_empty() {
                         out.push(Inline::Text(std::mem::take(&mut text)));
                     }
+                    let index = *next;
+                    *next += 1;
                     out.push(Inline::Link {
-                        text: label.to_string(),
-                        index: *next,
+                        text: inlines(label, next),
+                        index,
                         link,
                     });
-                    *next += 1;
                     rest = tail;
                 }
                 None => {
@@ -529,7 +535,7 @@ fn inlines(line: &str, next: &mut usize) -> Vec<Inline> {
                     if !text.is_empty() {
                         out.push(Inline::Text(std::mem::take(&mut text)));
                     }
-                    out.push(Inline::Bold(body[..end].to_string()));
+                    out.push(Inline::Bold(inlines(&body[..end], next)));
                     rest = &body[end + 2..];
                 }
                 None => {
@@ -570,7 +576,7 @@ fn inlines(line: &str, next: &mut usize) -> Vec<Inline> {
 }
 
 /// The text, link and remainder of a link at the start of `s`. The
-/// text is plain, so it holds no bracket. The target ends at
+/// text holds no bracket, so no link nests in another. The target ends at
 /// whitespace or `)`, and a title may be in either kind of quote.
 fn link(s: &str) -> Option<(&str, Link, &str)> {
     let close = s.find(']')?;
@@ -799,36 +805,46 @@ fn len(segs: &[Piece]) -> usize {
 fn words(text: &[Inline], theme: &Theme) -> Vec<Vec<Piece>> {
     let mut out = Vec::new();
     let mut word: Vec<Piece> = Vec::new();
-    for inline in text {
-        let (run, style) = match inline {
-            Inline::Code(c) => {
-                push_seg(&mut word, c.clone(), theme.code);
-                continue;
-            }
-            Inline::Bold(b) => (b, Style::new().bold()),
-            Inline::Text(t) => (t, Style::new()),
-            Inline::Link { text, index, .. } => {
-                let style = Style {
-                    link: Some(*index),
-                    ..theme.link
-                };
-                (text, style)
-            }
-        };
-        for ch in run.chars() {
-            if ch.is_whitespace() {
-                if !word.is_empty() {
-                    out.push(std::mem::take(&mut word));
-                }
-            } else {
-                push_seg(&mut word, ch.to_string(), style);
-            }
-        }
-    }
+    push_words(text, Style::new(), theme, &mut out, &mut word);
     if !word.is_empty() {
         out.push(word);
     }
     out
+}
+
+/// `words` for `text` drawn over `style`, adding to the words in `out`
+/// and the unfinished `word`.
+fn push_words(
+    text: &[Inline],
+    style: Style,
+    theme: &Theme,
+    out: &mut Vec<Vec<Piece>>,
+    word: &mut Vec<Piece>,
+) {
+    for inline in text {
+        match inline {
+            Inline::Code(c) => push_seg(word, c.clone(), style.patch(theme.code)),
+            Inline::Bold(inner) => push_words(inner, style.bold(), theme, out, word),
+            Inline::Link { text, index, .. } => {
+                let link = Style {
+                    link: Some(*index),
+                    ..theme.link
+                };
+                push_words(text, style.patch(link), theme, out, word);
+            }
+            Inline::Text(t) => {
+                for ch in t.chars() {
+                    if ch.is_whitespace() {
+                        if !word.is_empty() {
+                            out.push(std::mem::take(word));
+                        }
+                    } else {
+                        push_seg(word, ch.to_string(), style);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Greedy word wrap at `width`, a single space between words; a
@@ -1525,7 +1541,7 @@ mod tests {
             parse("a **b `c`** d"),
             [Block::Paragraph(vec![
                 Inline::Text("a ".into()),
-                Inline::Bold("b `c`".into()),
+                Inline::Bold(vec![Inline::Text("b ".into()), Inline::Code("c".into())]),
                 Inline::Text(" d".into()),
             ])]
         );
@@ -1739,6 +1755,131 @@ mod tests {
         assert_eq!(
             text("a [b](u) c", 10, true),
             ["a \x1b]8;;u\x1b\\\x1b[4mb\x1b[0m\x1b]8;;\x1b\\ c"]
+        );
+    }
+
+    fn piece<'a>(lines: &'a [Row], text: &str) -> &'a Piece {
+        lines.iter().flatten().find(|p| p.0 == text).unwrap()
+    }
+
+    fn link_to(target: &str) -> Link {
+        Link {
+            target: target.into(),
+            title: None,
+        }
+    }
+
+    #[test]
+    fn bold_in_link_text_is_bold_and_keeps_the_link() {
+        assert_eq!(
+            parse("[**failed** now](t)"),
+            [Block::Paragraph(vec![Inline::Link {
+                text: vec![
+                    Inline::Bold(vec![Inline::Text("failed".into())]),
+                    Inline::Text(" now".into()),
+                ],
+                index: 0,
+                link: link_to("t"),
+            }])]
+        );
+        let lines = render("[**failed** now](t)", 20);
+        assert_eq!(strings(&lines), padded(&["failed now"], 20));
+        let failed = piece(&lines, "failed").1;
+        assert!(failed.bold && failed.underline);
+        assert_eq!(failed.link, Some(0));
+        let now = piece(&lines, "now").1;
+        assert!(!now.bold && now.underline);
+        assert_eq!(now.link, Some(0));
+    }
+
+    #[test]
+    fn inline_code_in_link_text_keeps_its_colour_and_the_link() {
+        let lines = render("[`x`](t)", 10);
+        assert_eq!(strings(&lines), padded(&["x"], 10));
+        let x = piece(&lines, "x").1;
+        assert_eq!(x.fg, Some(Color::Cyan));
+        assert!(x.underline);
+        assert_eq!(x.link, Some(0));
+    }
+
+    #[test]
+    fn a_link_in_bold_is_bold_and_keeps_its_index() {
+        assert_eq!(
+            parse("**a [ok](t)**"),
+            [Block::Paragraph(vec![Inline::Bold(vec![
+                Inline::Text("a ".into()),
+                Inline::Link {
+                    text: vec![Inline::Text("ok".into())],
+                    index: 0,
+                    link: link_to("t"),
+                },
+            ])])]
+        );
+        let lines = render("**a [ok](t)**", 10);
+        assert_eq!(strings(&lines), padded(&["a ok"], 10));
+        let ok = piece(&lines, "ok").1;
+        assert!(ok.bold && ok.underline);
+        assert_eq!(ok.link, Some(0));
+        assert!(piece(&lines, "a").1.bold);
+        assert_eq!(links(&parse("**a [ok](t)**")), [link_to("t")]);
+    }
+
+    #[test]
+    fn inline_code_in_bold_is_bold_in_its_colour() {
+        let lines = render("**a `b`**", 10);
+        let b = piece(&lines, "b").1;
+        assert!(b.bold);
+        assert_eq!(b.fg, Some(Color::Cyan));
+    }
+
+    #[test]
+    fn a_link_in_bold_in_a_list_item_or_a_heading_keeps_its_place_in_the_links() {
+        let md = "# **[h](1)**\n\n- [a](2) **b [c](3)**\n\n[d](4)";
+        let targets: Vec<String> = links(&parse(md)).into_iter().map(|l| l.target).collect();
+        assert_eq!(targets, ["1", "2", "3", "4"]);
+        let lines = render(md, 20);
+        assert_eq!(strings(&lines), padded(&["h", "", "• a b c", "", "d"], 20));
+        let found: Vec<(&str, Option<usize>)> = lines.iter().flat_map(link_pieces).collect();
+        assert_eq!(
+            found,
+            [
+                ("h", Some(0)),
+                ("a", Some(1)),
+                ("c", Some(2)),
+                ("d", Some(3))
+            ]
+        );
+        assert!(piece(&lines, "h").1.bold);
+        assert!(piece(&lines, "c").1.bold);
+    }
+
+    #[test]
+    fn a_wrapped_link_with_bold_keeps_its_index_on_every_piece() {
+        let lines = render("[one **two three** four](t)", 6);
+        let found: Vec<(&str, Option<usize>)> = lines.iter().flat_map(link_pieces).collect();
+        assert_eq!(
+            found,
+            [
+                ("one", Some(0)),
+                ("two", Some(0)),
+                ("three", Some(0)),
+                ("four", Some(0)),
+            ]
+        );
+    }
+
+    #[test]
+    fn markup_in_a_code_block_stays_literal() {
+        let lines = strings(&render("```\n[**a**](t) **[b](u)**\n```", 30));
+        assert_eq!(lines[0].trim_end(), "│ [**a**](t) **[b](u)**");
+        assert!(links(&parse("```\n[a](t)\n```")).is_empty());
+    }
+
+    #[test]
+    fn terminal_text_paints_bold_link_text_bold_and_underlined() {
+        assert_eq!(
+            text("[**b**](u)", 10, true),
+            ["\x1b]8;;u\x1b\\\x1b[1;4mb\x1b[0m\x1b]8;;\x1b\\"]
         );
     }
 

@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   double or single quoted title. Only the text is drawn, underlined, and its
   `Style` carries a `link` index. `links` returns the `Link` targets and titles
   in document order, so `links[i]` belongs to `Some(i)`. `text` also wraps the
-  link in an OSC 8 hyperlink when `color` is set. The text is plain: bold and
-  code inside it stay literal. Autolinks and images stay as typed.
+  link in an OSC 8 hyperlink when `color` is set. Autolinks and images stay
+  as typed.
 - `Block::Code` has a `wrap` field, which the parser sets to false. When an
   app sets it, `layout` splits a line wider than the block across rows after
   highlighting, so each piece keeps its colour. A continuation row has `┆` in
@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `Inline::Bold` and a link's `text` hold `Vec<Inline>` in place of a
+  string. Bold may hold inline code and links. Link text may hold bold and
+  inline code, but not another link. Styles add up when laid out. Bold link
+  text stays underlined and gains bold, and a link in bold is bold. Inline
+  code keeps its colour in either one. Every piece of a link keeps the
+  link's index, and `links` counts links inside bold in document order.
 - A fenced code block closes only at a line of at least as many backticks as
   opened it, and nothing else. A block opened with four backticks now holds
   a three-backtick fence as text, where before it ended there.
