@@ -87,6 +87,36 @@ pub type Piece = (String, Style);
 /// One line of output, left to right.
 pub type Row = Vec<Piece>;
 
+/// How a row follows the row above it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Join {
+    /// The row starts a line of the text.
+    Break,
+    /// The row goes on from the one above, which broke at a space.
+    Space,
+    /// The row goes on from the one above, which broke inside a word.
+    Word,
+}
+
+/// Where a row's text starts and how the row follows the one above.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Mark {
+    /// The columns before the text: a quote's bar, a code block's gutter,
+    /// or a list item's indent on the rows after its first.
+    pub lead: usize,
+    pub join: Join,
+}
+
+const BREAK: Mark = Mark {
+    lead: 0,
+    join: Join::Break,
+};
+
+const GUTTERED: Mark = Mark {
+    lead: 2,
+    join: Join::Break,
+};
+
 /// A run of text inside a paragraph, list item or table cell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Inline {
@@ -589,7 +619,15 @@ fn closing(s: &str, ticks: usize) -> Option<usize> {
 pub fn layout(blocks: &[Block], width: usize) -> Vec<Row> {
     lines(blocks, width)
         .into_iter()
-        .map(|segs| finish(segs, width))
+        .map(|(segs, _)| finish(segs, width))
+        .collect()
+}
+
+/// `layout`, each row with its mark.
+pub fn layout_marked(blocks: &[Block], width: usize) -> Vec<(Row, Mark)> {
+    lines(blocks, width)
+        .into_iter()
+        .map(|(segs, mark)| (finish(segs, width), mark))
         .collect()
 }
 
@@ -601,7 +639,7 @@ pub fn text(text: &str, width: usize, color: bool) -> Vec<String> {
     let links = links(&blocks);
     lines(&blocks, width)
         .into_iter()
-        .map(|segs| {
+        .map(|(segs, _)| {
             let mut merged = Vec::new();
             for (s, style) in segs {
                 push_seg(&mut merged, s, style);
@@ -692,33 +730,40 @@ fn ansi(color: Color) -> u8 {
 }
 
 /// The blocks as lines of at most `width` characters, a blank
-/// line between blocks.
-fn lines(blocks: &[Block], width: usize) -> Vec<Vec<Piece>> {
+/// line between blocks, each with its mark.
+fn lines(blocks: &[Block], width: usize) -> Vec<(Vec<Piece>, Mark)> {
     let theme = &THEME;
-    let mut out: Vec<Vec<Piece>> = Vec::new();
+    let mut out: Vec<(Vec<Piece>, Mark)> = Vec::new();
     for (n, block) in blocks.iter().enumerate() {
         if n > 0 {
-            out.push(Vec::new());
+            out.push((Vec::new(), BREAK));
         }
         match block {
             Block::Heading { level, text } => heading_lines(*level, text, width, theme, &mut out),
-            Block::Paragraph(text) => out.extend(wrap(&words(text, theme), width)),
+            Block::Paragraph(text) => out.extend(unindented(wrap(&words(text, theme), width))),
             Block::List(items) => list(items, width, theme, &mut out),
             Block::Code {
                 lang, lines, wrap, ..
             } => code(lang.as_deref(), lines, *wrap, width, theme, &mut out),
             Block::Table { header, rows } => table(header, rows, width, theme, &mut out),
-            Block::Rule => out.push(vec![("─".repeat(width), theme.rule)]),
+            Block::Rule => out.push((vec![("─".repeat(width), theme.rule)], BREAK)),
             Block::Quote(inner) => {
-                for row in lines(inner, width.saturating_sub(2)) {
+                for (row, mark) in lines(inner, width.saturating_sub(2)) {
                     let mut segs = vec![("│ ".to_string(), theme.quote)];
                     segs.extend(row);
-                    out.push(segs);
+                    let lead = mark.lead + 2;
+                    out.push((segs, Mark { lead, ..mark }));
                 }
             }
         }
     }
     out
+}
+
+/// Wrapped rows with no columns before their text.
+fn unindented(rows: Vec<(Vec<Piece>, Join)>) -> impl Iterator<Item = (Vec<Piece>, Mark)> {
+    rows.into_iter()
+        .map(|(segs, join)| (segs, Mark { lead: 0, join }))
 }
 
 /// A line cut or padded to exactly `width`, adjacent segments of
@@ -788,17 +833,19 @@ fn words(text: &[Inline], theme: &Theme) -> Vec<Vec<Piece>> {
 
 /// Greedy word wrap at `width`, a single space between words; a
 /// word longer than the width is cut across lines. No words make
-/// one empty line.
-fn wrap(words: &[Vec<Piece>], width: usize) -> Vec<Vec<Piece>> {
+/// one empty line. Each line comes with how it follows the one above.
+fn wrap(words: &[Vec<Piece>], width: usize) -> Vec<(Vec<Piece>, Join)> {
     let width = width.max(1);
     let mut lines = Vec::new();
     let mut line: Vec<Piece> = Vec::new();
+    let mut join = Join::Break;
     for word in words {
         let n = len(word);
         if !line.is_empty() && len(&line) + 1 + n <= width {
             push_seg(&mut line, " ".into(), Style::new());
         } else if !line.is_empty() {
-            lines.push(std::mem::take(&mut line));
+            lines.push((std::mem::take(&mut line), join));
+            join = Join::Space;
         }
         if n <= width {
             for (s, style) in word {
@@ -809,13 +856,14 @@ fn wrap(words: &[Vec<Piece>], width: usize) -> Vec<Vec<Piece>> {
         for (s, style) in word {
             for ch in s.chars() {
                 if len(&line) == width {
-                    lines.push(std::mem::take(&mut line));
+                    lines.push((std::mem::take(&mut line), join));
+                    join = Join::Word;
                 }
                 push_seg(&mut line, ch.to_string(), *style);
             }
         }
     }
-    lines.push(line);
+    lines.push((line, join));
     lines
 }
 
@@ -824,7 +872,7 @@ fn heading_lines(
     text: &[Inline],
     width: usize,
     theme: &Theme,
-    out: &mut Vec<Vec<Piece>>,
+    out: &mut Vec<(Vec<Piece>, Mark)>,
 ) {
     let style = match level {
         1 => theme.heading.underline(),
@@ -832,16 +880,16 @@ fn heading_lines(
     };
     // patched after the wrap, so the spaces between the words
     // carry the underline too
-    for line in wrap(&words(text, theme), width) {
-        out.push(
-            line.into_iter()
-                .map(|(s, st)| (s, st.patch(style)))
-                .collect(),
-        );
+    for (line, join) in wrap(&words(text, theme), width) {
+        let line = line
+            .into_iter()
+            .map(|(s, st)| (s, st.patch(style)))
+            .collect();
+        out.push((line, Mark { lead: 0, join }));
     }
 }
 
-fn list(items: &[Item], width: usize, theme: &Theme, out: &mut Vec<Vec<Piece>>) {
+fn list(items: &[Item], width: usize, theme: &Theme, out: &mut Vec<(Vec<Piece>, Mark)>) {
     for (k, item) in items.iter().enumerate() {
         let marker = match item.number {
             Some(n) => {
@@ -859,19 +907,21 @@ fn list(items: &[Item], width: usize, theme: &Theme, out: &mut Vec<Vec<Piece>>) 
         // the indent gives way before the text does
         let lead = (item.depth * 2).min(width.saturating_sub(mark + 8));
         let col = (lead + mark).min(width.saturating_sub(1));
-        for (j, mut line) in wrap(&words(&item.text, theme), width - col)
+        for (j, (mut line, join)) in wrap(&words(&item.text, theme), width - col)
             .into_iter()
             .enumerate()
         {
             let mut segs = Vec::new();
-            if j == 0 {
+            let mark = if j == 0 {
                 push_seg(&mut segs, " ".repeat(lead), Style::new());
                 push_seg(&mut segs, marker.clone(), theme.bullet);
+                Mark { lead: 0, join }
             } else {
                 push_seg(&mut segs, " ".repeat(col), Style::new());
-            }
+                Mark { lead: col, join }
+            };
             segs.append(&mut line);
-            out.push(segs);
+            out.push((segs, mark));
         }
     }
 }
@@ -897,14 +947,15 @@ fn code(
     wrap: bool,
     width: usize,
     theme: &Theme,
-    out: &mut Vec<Vec<Piece>>,
+    out: &mut Vec<(Vec<Piece>, Mark)>,
 ) {
     let inner = width.saturating_sub(2);
     if let Some(lang) = lang {
-        out.push(vec![
+        let row = vec![
             ("┌ ".into(), theme.rule),
             (lang.chars().take(inner).collect(), theme.lang),
-        ]);
+        ];
+        out.push((row, GUTTERED));
     }
     let mut lexer = lang.and_then(Lexer::new);
     for line in lines {
@@ -941,23 +992,23 @@ fn code(
         } else {
             shown.extend(segs);
         }
-        out.push(shown);
+        out.push((shown, GUTTERED));
     }
 }
 
 /// One highlighted line split into rows of `inner` characters,
 /// each row after the first under a `┆ ` gutter.
-fn wrapped_code(segs: Vec<Piece>, inner: usize, theme: &Theme, out: &mut Vec<Vec<Piece>>) {
+fn wrapped_code(segs: Vec<Piece>, inner: usize, theme: &Theme, out: &mut Vec<(Vec<Piece>, Mark)>) {
     let mut row = vec![("│ ".to_string(), theme.rule)];
+    let mut mark = GUTTERED;
     let mut room = inner;
     for (s, style) in segs {
         let mut rest = s.as_str();
         while !rest.is_empty() {
             if room == 0 {
-                out.push(std::mem::replace(
-                    &mut row,
-                    vec![("┆ ".to_string(), theme.rule)],
-                ));
+                let next = vec![("┆ ".to_string(), theme.rule)];
+                out.push((std::mem::replace(&mut row, next), mark));
+                mark.join = Join::Word;
                 room = inner;
             }
             let end = rest.char_indices().nth(room).map_or(rest.len(), |(i, _)| i);
@@ -966,7 +1017,7 @@ fn wrapped_code(segs: Vec<Piece>, inner: usize, theme: &Theme, out: &mut Vec<Vec
             rest = &rest[end..];
         }
     }
-    out.push(row);
+    out.push((row, mark));
 }
 
 fn table(
@@ -974,7 +1025,7 @@ fn table(
     rows: &[Vec<Vec<Inline>>],
     width: usize,
     theme: &Theme,
-    out: &mut Vec<Vec<Piece>>,
+    out: &mut Vec<(Vec<Piece>, Mark)>,
 ) {
     let cols = header.len();
     let cell = |row: &[Vec<Inline>], c: usize| words(row.get(c).map_or(&[][..], |v| v), theme);
@@ -984,7 +1035,7 @@ fn table(
                 .chain(rows.iter().map(Vec::as_slice))
                 .map(|row| {
                     let w = cell(row, c);
-                    len(&wrap(&w, usize::MAX)[0])
+                    len(&wrap(&w, usize::MAX)[0].0)
                 })
                 .max()
                 .unwrap_or(0)
@@ -999,7 +1050,7 @@ fn table(
         }
     }
     let sep = || (" │ ".to_string(), theme.rule);
-    let draw = |row: &[Vec<Inline>], style: Style, out: &mut Vec<Vec<Piece>>| {
+    let draw = |row: &[Vec<Inline>], style: Style, out: &mut Vec<(Vec<Piece>, Mark)>| {
         let wrapped: Vec<Vec<Vec<Piece>>> = (0..cols)
             .map(|c| {
                 let words: Vec<Vec<Piece>> = cell(row, c)
@@ -1007,6 +1058,9 @@ fn table(
                     .map(|w| w.into_iter().map(|(s, st)| (s, st.patch(style))).collect())
                     .collect();
                 wrap(&words, widths[c])
+                    .into_iter()
+                    .map(|(line, _)| line)
+                    .collect()
             })
             .collect();
         let height = wrapped.iter().map(Vec::len).max().unwrap_or(1);
@@ -1021,13 +1075,13 @@ fn table(
                 segs.extend(part);
                 segs.push((" ".repeat(fill), Style::new()));
             }
-            out.push(segs);
+            out.push((segs, BREAK));
         }
     };
     draw(header, theme.header, out);
     let rule: Vec<String> = widths.iter().map(|&w| "─".repeat(w)).collect();
     let rule_line = vec![(rule.join("─┼─"), theme.rule)];
-    out.push(rule_line);
+    out.push((rule_line, BREAK));
     for row in rows {
         draw(row, Style::new(), out);
     }
@@ -1039,11 +1093,11 @@ fn stacked(
     rows: &[Vec<Vec<Inline>>],
     width: usize,
     theme: &Theme,
-    out: &mut Vec<Vec<Piece>>,
+    out: &mut Vec<(Vec<Piece>, Mark)>,
 ) {
     for (n, row) in rows.iter().enumerate() {
         if n > 0 {
-            out.push(Vec::new());
+            out.push((Vec::new(), BREAK));
         }
         for (c, head) in header.iter().enumerate() {
             let mut label = words(head, theme);
@@ -1056,7 +1110,7 @@ fn stacked(
                 }
             }
             label.extend(words(row.get(c).map_or(&[][..], |v| v), theme));
-            out.extend(wrap(&label, width));
+            out.extend(unindented(wrap(&label, width)));
         }
     }
 }
@@ -1692,5 +1746,95 @@ mod tests {
     fn a_link_target_with_a_control_character_gets_no_hyperlink() {
         let md = "[b](u\x07v)";
         assert_eq!(text(md, 10, true), ["\x1b[4mb\x1b[0m"]);
+    }
+
+    fn marks(text: &str, width: usize) -> Vec<Mark> {
+        layout_marked(&parse(text), width)
+            .into_iter()
+            .map(|(_, mark)| mark)
+            .collect()
+    }
+
+    fn mark(lead: usize, join: Join) -> Mark {
+        Mark { lead, join }
+    }
+
+    #[test]
+    fn a_row_that_wraps_at_a_space_goes_on_from_the_one_above() {
+        assert_eq!(
+            marks("one two three", 8),
+            [mark(0, Join::Break), mark(0, Join::Space)]
+        );
+    }
+
+    #[test]
+    fn a_word_cut_across_rows_goes_on_inside_the_word() {
+        assert_eq!(
+            marks("ab cdefghijkl", 5),
+            [
+                mark(0, Join::Break),
+                mark(0, Join::Space),
+                mark(0, Join::Word),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_blank_line_and_a_new_paragraph_each_start_a_line() {
+        assert_eq!(
+            marks("one\n\ntwo", 8),
+            [
+                mark(0, Join::Break),
+                mark(0, Join::Break),
+                mark(0, Join::Break)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_list_items_later_rows_lead_with_its_indent() {
+        assert_eq!(
+            marks("- one two three", 10),
+            [mark(0, Join::Break), mark(2, Join::Space)]
+        );
+    }
+
+    #[test]
+    fn a_quotes_rows_lead_with_its_bar() {
+        assert_eq!(
+            marks("> one two three", 10),
+            [mark(2, Join::Break), mark(2, Join::Space)]
+        );
+    }
+
+    #[test]
+    fn a_wrapped_code_lines_rows_lead_with_the_gutter_and_join_inside_a_word() {
+        let mut blocks = parse("```\nabcdefghij\nk\n```");
+        if let Block::Code { wrap, .. } = &mut blocks[0] {
+            *wrap = true;
+        }
+        let marks: Vec<Mark> = layout_marked(&blocks, 6)
+            .into_iter()
+            .map(|(_, mark)| mark)
+            .collect();
+        assert_eq!(
+            marks,
+            [
+                mark(2, Join::Break),
+                mark(2, Join::Word),
+                mark(2, Join::Word),
+                mark(2, Join::Break),
+            ]
+        );
+    }
+
+    #[test]
+    fn marked_rows_are_the_rows_layout_gives() {
+        let blocks = parse("# head\n\n- a b c d e f\n\n> q r s t u");
+        let rows: Vec<Row> = layout_marked(&blocks, 6)
+            .into_iter()
+            .map(|(row, _)| row)
+            .collect();
+        assert_eq!(rows, layout(&blocks, 6));
     }
 }

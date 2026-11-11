@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Block::Code` has a `tab` field. It holds the name from `tab="<name>"` on
   the opening line, after the language. The name may contain spaces.
   `layout` does not draw it.
+- `layout_marked` returns the rows of `layout`, each with a `Mark`. The
+  mark's `join` says whether the row starts a line of the text, goes on
+  after a break at a space, or goes on inside a cut word. Its `lead` counts
+  the columns before the row's text: a quote's bar, a code block's gutter,
+  or a list item's indent on its later rows. A wrapped code line's `┆` rows
+  join inside a word.
 
 ### Changed
 
