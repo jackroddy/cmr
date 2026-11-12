@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-12
+
 ### Added
 
 - Links written as `[text](target)` or `[text](target "title")`, with a
@@ -54,5 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Blockquotes from lines that start with `> `. The inside is read as markdown
   again and drawn behind a dim `│ ` gutter.
 
-[Unreleased]: https://github.com/jackroddy/cmr/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jackroddy/cmr/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jackroddy/cmr/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jackroddy/cmr/releases/tag/v0.1.0
