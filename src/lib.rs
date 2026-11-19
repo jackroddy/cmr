@@ -172,6 +172,8 @@ pub enum Block {
     Table {
         header: Vec<Vec<Inline>>,
         rows: Vec<Vec<Vec<Inline>>>,
+        /// Whether a rule runs between body rows.
+        rules: bool,
     },
     Rule,
     Quote(Vec<Block>),
@@ -229,7 +231,7 @@ pub fn links(blocks: &[Block]) -> Vec<Link> {
         match block {
             Block::Heading { text, .. } | Block::Paragraph(text) => collect_links(text, &mut out),
             Block::List(items) => items.iter().for_each(|i| collect_links(&i.text, &mut out)),
-            Block::Table { header, rows } => {
+            Block::Table { header, rows, .. } => {
                 for cell in header.iter().chain(rows.iter().flatten()) {
                     collect_links(cell, &mut out);
                 }
@@ -297,7 +299,11 @@ fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
                 rows.push(cells(lines[i], next));
                 i += 1;
             }
-            blocks.push(Block::Table { header, rows });
+            blocks.push(Block::Table {
+                header,
+                rows,
+                rules: false,
+            });
             continue;
         }
         if let Some((level, rest)) = heading(line) {
@@ -751,7 +757,11 @@ fn lines(blocks: &[Block], width: usize) -> Vec<(Vec<Piece>, Mark)> {
             Block::Code {
                 lang, lines, wrap, ..
             } => code(lang.as_deref(), lines, *wrap, width, theme, &mut out),
-            Block::Table { header, rows } => table(header, rows, width, theme, &mut out),
+            Block::Table {
+                header,
+                rows,
+                rules,
+            } => table(header, rows, *rules, width, theme, &mut out),
             Block::Rule => out.push((vec![("─".repeat(width), theme.rule)], BREAK)),
             Block::Quote(inner) => {
                 for (row, mark) in lines(inner, width.saturating_sub(2)) {
@@ -1039,6 +1049,7 @@ fn wrapped_code(segs: Vec<Piece>, inner: usize, theme: &Theme, out: &mut Vec<(Ve
 fn table(
     header: &[Vec<Inline>],
     rows: &[Vec<Vec<Inline>>],
+    rules: bool,
     width: usize,
     theme: &Theme,
     out: &mut Vec<(Vec<Piece>, Mark)>,
@@ -1097,8 +1108,11 @@ fn table(
     draw(header, theme.header, out);
     let rule: Vec<String> = widths.iter().map(|&w| "─".repeat(w)).collect();
     let rule_line = vec![(rule.join("─┼─"), theme.rule)];
-    out.push((rule_line, BREAK));
-    for row in rows {
+    out.push((rule_line.clone(), BREAK));
+    for (n, row) in rows.iter().enumerate() {
+        if rules && n > 0 {
+            out.push((rule_line.clone(), BREAK));
+        }
         draw(row, Style::new(), out);
     }
 }
@@ -1503,6 +1517,27 @@ mod tests {
                 "    │ wrap          ",
             ]
             .map(|l| format!("{l:<20}"))
+        );
+    }
+
+    #[test]
+    fn a_table_with_rules_has_one_between_body_rows_and_none_after_the_last() {
+        let mut blocks =
+            parse("| key | value |\n|---|---|\n| a | one two three four |\n| b | five |");
+        let Block::Table { rules, .. } = &mut blocks[0] else {
+            panic!("expected a table");
+        };
+        *rules = true;
+        assert_eq!(
+            strings(&layout(&blocks, 16)),
+            [
+                "key │ value     ",
+                "────┼───────────",
+                "a   │ one two   ",
+                "    │ three four",
+                "────┼───────────",
+                "b   │ five      ",
+            ]
         );
     }
 

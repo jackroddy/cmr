@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Block::Table` has a `rules` field, which the parser sets to false. When a
+  caller sets it, `layout` draws the header rule again between body rows.
+  The new field breaks code that builds `Block::Table` or matches it without
+  `..`.
+
 ## [0.2.0] - 2026-11-12
 
 ### Added
