@@ -13,11 +13,20 @@
   "lease_expires": "2026-11-19T21:14:05.32403485Z",
   "defer_until": null,
   "created_at": "2026-11-19T20:59:02.45806125Z",
-  "updated_at": "2026-11-19T20:59:05.32403485Z",
+  "updated_at": "2026-11-19T21:03:46.362267934Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
-  "notes": [],
+  "notes": [
+    {
+      "id": "521ebc5f",
+      "at": "2026-11-19T21:03:46.362267424Z",
+      "author": "Jack Roddy/85c47808",
+      "text": "Done in the working tree on `dev`, not yet committed. `table` takes `rules` and pushes the header rule again before each body row after the first. The test `a_table_with_rules_has_one_between_body_rows_and_none_after_the_last` covers it. The `Unreleased` changelog section names the break.",
+      "commit": "94e90f5",
+      "branch": "dev"
+    }
+  ],
   "stamps": {
     "created": {
       "commit": "94e90f5",
