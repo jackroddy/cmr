@@ -13,11 +13,20 @@
   "lease_expires": "2026-11-25T21:44:13.032951739Z",
   "defer_until": null,
   "created_at": "2026-11-25T21:29:10.415528502Z",
-  "updated_at": "2026-11-25T21:29:13.032951739Z",
+  "updated_at": "2026-11-25T21:35:56.852916049Z",
   "closed_at": null,
   "close_reason": null,
   "resolution": null,
-  "notes": [],
+  "notes": [
+    {
+      "id": "80a62461",
+      "at": "2026-11-25T21:35:56.852915519Z",
+      "author": "Jack Roddy/c836bb27",
+      "text": "Built, uncommitted. Choices the issue left open:\n\n- `gap` applies between blocks at every level, inside quotes too. `Vertical::Spread` shares rows only among the gaps between top-level blocks, and the earlier gaps take the remainder. With one block it falls back to `Top`.\n- A `Format` setting overrides a block only when it asks for something. Under `code(Cut)`, a block whose own `wrap` is true still wraps. A table gets rules when its own `rules` or `table_rules(true)` is set. The default `Format` lays out every block as before.\n- Rendering lays the document out, then shifts it for `horizontal`, then pads or clips it to `height`. The padding rows and the `…` row are not shifted.\n- Under `Overflow::Keep` a code block is laid out at the larger of the width and its longest line or language header, plus its gutter, so its rows can be wider than the width.",
+      "commit": "48ac8bc",
+      "branch": "dev"
+    }
+  ],
   "stamps": {
     "created": {
       "commit": "48ac8bc",
