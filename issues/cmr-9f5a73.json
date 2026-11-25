@@ -3,7 +3,7 @@
   "title": "A table can be laid out at its narrowest width instead of as records",
   "body": "When a table's columns do not fit the width even at the column floor, `render_with` draws it as records, one row per cell. coax pans a wide table instead, so it lays the table out at the floor total itself. Its `column_widths` in `src/ui.rs` renders the table at 1000 columns and splits the drawn `─┼─` rule to recover each column's natural width, and `table_width` repeats cmr's 3-column gap and its narrowing order. Both break without an error if cmr changes the rule glyph or the gap.\n\n## Proposal\n\nA table setting on `Format`, `.tables(Overflow::Keep)`, that lays a table that does not fit out at its narrowest width, with rows wider than `width`, as `Overflow::Keep` does for code. coax could then delete `column_widths` and `table_width`.\n\n## Rejected\n\n- `Block::column_widths(&self) -> Option<Vec<usize>>`. coax would still repeat the gap and the narrowing order.",
   "type": "feature",
-  "status": "open",
+  "status": "closed",
   "priority": 2,
   "labels": [],
   "parent": null,
@@ -13,16 +13,19 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-11-25T21:51:12.608961935Z",
-  "updated_at": "2026-11-25T21:51:12.608961935Z",
-  "closed_at": null,
-  "close_reason": null,
-  "resolution": null,
+  "updated_at": "2026-11-25T22:30:32.904259108Z",
+  "closed_at": "2026-11-25T22:30:32.904259108Z",
+  "close_reason": "Landed in fff2263.",
+  "resolution": "done",
   "notes": [],
   "stamps": {
     "created": {
       "commit": "f455382",
       "branch": "dev"
     },
-    "closed": null
+    "closed": {
+      "commit": "fff2263",
+      "branch": "dev"
+    }
   }
 }
