@@ -6,7 +6,7 @@
 mod hl;
 
 use std::fmt;
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 use std::rc::Rc;
 
 use hl::{Class, Lexer};
@@ -118,6 +118,34 @@ impl Row {
     pub fn text(&self) -> String {
         self.pieces.iter().map(|(s, _)| s.as_str()).collect()
     }
+
+    /// The columns each link covers and its index into `Document::links`,
+    /// a column being a char.
+    pub fn links(&self) -> Vec<(Range<usize>, usize)> {
+        let mut out: Vec<(Range<usize>, usize)> = Vec::new();
+        let mut column = 0;
+        for (s, style) in &self.pieces {
+            let end = column + s.chars().count();
+            if let Some(index) = style.link {
+                match out.last_mut() {
+                    Some((range, last)) if *last == index && range.end == column => range.end = end,
+                    _ => out.push((column..end, index)),
+                }
+            }
+            column = end;
+        }
+        out
+    }
+
+    /// The source byte of the char at each column, `None` where cmr drew
+    /// the char itself.
+    pub fn sources(&self) -> Vec<Option<usize>> {
+        let mut out = Vec::new();
+        for (s, style) in &self.pieces {
+            out.extend(s.char_indices().map(|(i, _)| style.source.map(|at| at + i)));
+        }
+        out
+    }
 }
 
 impl fmt::Display for Row {
@@ -171,7 +199,7 @@ pub enum Join {
 struct Mark {
     lead: usize,
     join: Join,
-    /// Whether the row is part of a code block kept at its natural width.
+    /// Whether the row is part of a block kept wider than the width.
     kept: bool,
 }
 
@@ -258,6 +286,17 @@ pub enum Block {
     Quote(Vec<Block>),
 }
 
+impl Block {
+    /// The columns a code block takes laid out whole under `Overflow::Keep`,
+    /// gutter and language header included; `None` for other blocks.
+    pub fn width(&self) -> Option<usize> {
+        match self {
+            Block::Code { lang, lines, .. } => Some(code_width(lang.as_deref(), lines, 0)),
+            _ => None,
+        }
+    }
+}
+
 struct Theme {
     heading: Style,
     header: Style,
@@ -309,9 +348,23 @@ impl Document {
 
     /// The document laid out under `format`.
     pub fn render_with(&self, format: Format) -> Page {
-        let width = format.width;
+        self.page(&self.blocks, format)
+    }
+
+    /// Block `index` of `blocks` laid out alone under `format`, its links
+    /// indexed as in the whole document.
+    ///
+    /// # Panics
+    ///
+    /// If `index` is out of range of `blocks`.
+    pub fn render_block(&self, index: usize, format: Format) -> Page {
+        self.page(std::slice::from_ref(&self.blocks[index]), format)
+    }
+
+    fn page(&self, blocks: &[Block], format: Format) -> Page {
+        let width = format.width.saturating_sub(format.indent);
         let mut laid = Vec::new();
-        let starts = lines(&self.blocks, width, &format, &THEME, &mut laid);
+        let starts = lines(blocks, width, &format, &THEME, &mut laid);
         let links: Rc<[Link]> = Rc::from(self.links.as_slice());
         let row = |segs: Vec<Piece>, mark: Mark| {
             let width = if mark.kept {
@@ -331,13 +384,38 @@ impl Document {
             .map(|(segs, mark)| row(segs, mark))
             .collect();
         shift(&mut rows, width, format.horizontal);
-        if let Some(height) = format.height {
-            let blank = row(Vec::new(), BREAK);
-            let ellipsis = row(vec![("…".into(), Style::new().dim())], BREAK);
-            rows = fit(rows, height, format.vertical, &starts, blank, ellipsis);
+        let limit = [format.height, format.max_height]
+            .into_iter()
+            .flatten()
+            .min();
+        if let Some(limit) = limit {
+            if rows.len() > limit {
+                rows.truncate(limit);
+                if let Some(last) = rows.last_mut() {
+                    *last = row(vec![("…".into(), Style::new().dim())], BREAK);
+                }
+            } else if format.height.is_some() {
+                let blank = row(Vec::new(), BREAK);
+                rows = pad(rows, limit, format.vertical, &starts, blank);
+            }
+        }
+        if format.indent > 0 {
+            for row in &mut rows {
+                move_right(row, format.indent);
+            }
         }
         Page { rows }
     }
+}
+
+/// Puts `by` blank columns before `row`, counted in its `lead`.
+fn move_right(row: &mut Row, by: usize) {
+    let mut pieces = vec![(" ".repeat(by), Style::new())];
+    for (s, style) in row.pieces.drain(..) {
+        push_seg(&mut pieces, s, style);
+    }
+    row.pieces = pieces;
+    row.lead += by;
 }
 
 /// Rows shifted right as one block, so the widest row's text sits where
@@ -356,30 +434,20 @@ fn shift(rows: &mut [Row], width: usize, horizontal: Horizontal) {
     }
     for row in rows {
         let width = len(&row.pieces);
-        let mut segs = vec![(" ".repeat(by), Style::new())];
-        segs.append(&mut row.pieces);
-        row.pieces = finish(segs, width);
-        row.lead += by;
+        move_right(row, by);
+        row.pieces = finish(std::mem::take(&mut row.pieces), width);
     }
 }
 
-/// `rows` padded with `blank` rows or cut to exactly `height`, a cut
-/// ending in `ellipsis`. `starts` are the rows the top-level blocks start at.
-fn fit(
+/// `rows`, at most `height` of them, padded with `blank` rows to `height`.
+/// `starts` are the rows the top-level blocks start at.
+fn pad(
     mut rows: Vec<Row>,
     height: usize,
     vertical: Vertical,
     starts: &[usize],
     blank: Row,
-    ellipsis: Row,
 ) -> Vec<Row> {
-    if rows.len() > height {
-        rows.truncate(height);
-        if let Some(last) = rows.last_mut() {
-            *last = ellipsis;
-        }
-        return rows;
-    }
     let spare = height - rows.len();
     let mut out = Vec::with_capacity(height);
     if vertical == Vertical::Spread && starts.len() > 1 {
@@ -411,15 +479,19 @@ fn fit(
 pub struct Format {
     width: usize,
     height: Option<usize>,
+    max_height: Option<usize>,
     horizontal: Horizontal,
     vertical: Vertical,
     code: Overflow,
+    code_margin: usize,
+    tables: Overflow,
     table_rules: bool,
     /// The narrowest a table column shrinks to.
     floor: usize,
     /// The widest a table column grows to.
     cap: usize,
     gap: usize,
+    indent: usize,
 }
 
 impl Default for Format {
@@ -427,13 +499,17 @@ impl Default for Format {
         Format {
             width: 80,
             height: None,
+            max_height: None,
             horizontal: Horizontal::Left,
             vertical: Vertical::Top,
             code: Overflow::Cut,
+            code_margin: 0,
+            tables: Overflow::Wrap,
             table_rules: false,
             floor: MIN_COLUMN,
             cap: usize::MAX,
             gap: 1,
+            indent: 0,
         }
     }
 }
@@ -465,6 +541,14 @@ impl FormatBuilder {
         self
     }
 
+    /// The most rows: longer output is cut as under `height` and shorter
+    /// output is not padded. With `height` set too, the page is `height`
+    /// rows but never more than `max_height`.
+    pub fn max_height(mut self, max_height: usize) -> Self {
+        self.format.max_height = Some(max_height);
+        self
+    }
+
     /// Where the text sits across the width; `Left` by default.
     pub fn horizontal(mut self, horizontal: Horizontal) -> Self {
         self.format.horizontal = horizontal;
@@ -481,6 +565,20 @@ impl FormatBuilder {
     /// Rows of a block under `Keep` can be wider than the width.
     pub fn code(mut self, code: Overflow) -> Self {
         self.format.code = code;
+        self
+    }
+
+    /// The columns kept free at the end of a code block's header row; 0 by
+    /// default. Under `Keep` the block widens to keep them free.
+    pub fn code_margin(mut self, code_margin: usize) -> Self {
+        self.format.code_margin = code_margin;
+        self
+    }
+
+    /// What happens to a table that does not fit the width at the column
+    /// floor; `Wrap` by default. Rows of a table under `Keep` can be wider.
+    pub fn tables(mut self, tables: Overflow) -> Self {
+        self.format.tables = tables;
         self
     }
 
@@ -502,6 +600,13 @@ impl FormatBuilder {
     /// The number of blank rows between blocks; 1 by default.
     pub fn gap(mut self, gap: usize) -> Self {
         self.format.gap = gap;
+        self
+    }
+
+    /// The blank columns before every row, counted in its `lead`; 0 by
+    /// default. The text is laid out in the width left after them.
+    pub fn indent(mut self, indent: usize) -> Self {
+        self.format.indent = indent;
         self
     }
 
@@ -529,14 +634,17 @@ pub enum Vertical {
     Spread,
 }
 
-/// What happens to a code line wider than the width.
+/// What happens to a code line or a table wider than the width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overflow {
-    /// The line goes on in continuation rows.
+    /// A code line goes on in continuation rows; a table is drawn as
+    /// records, one row per cell.
     Wrap,
-    /// The line is cut and ends in `…`.
+    /// A code line is cut and ends in `…`; a table is laid out as under
+    /// `Keep` and its rows cut at the width.
     Cut,
-    /// The block is laid out at the width of its longest line.
+    /// A code block is laid out at the width of its longest line; a table
+    /// at its narrowest, every column at the floor or narrower.
     Keep,
 }
 
@@ -1075,7 +1183,14 @@ fn lines(
                     Overflow::Cut if *wrap => Overflow::Wrap,
                     overflow => overflow,
                 };
-                code(lang.as_deref(), lines, sources, overflow, width, theme, out)
+                let lang = lang.as_deref();
+                let margin = format.code_margin;
+                let width = match overflow {
+                    Overflow::Keep => width.max(code_width(lang, lines, margin)),
+                    _ => width,
+                };
+                let highlighted = highlighted(lang, lines, sources, theme);
+                code(lang, highlighted, overflow, margin, width, theme, out)
             }
             Block::Table {
                 header,
@@ -1084,7 +1199,13 @@ fn lines(
             } => {
                 let rules = *rules || format.table_rules;
                 let columns = format.floor..=format.cap;
-                table(header, rows, rules, columns, width, theme, out)
+                let (widths, fits) = column_widths(header, rows, columns, width, theme);
+                if fits || format.tables != Overflow::Wrap {
+                    let kept = !fits && format.tables == Overflow::Keep;
+                    table(header, rows, &widths, rules, kept, theme, out)
+                } else {
+                    stacked(header, rows, width, theme, out)
+                }
             }
             Block::Rule => out.push((vec![("─".repeat(width), theme.rule)], BREAK)),
             Block::Quote(inner) => {
@@ -1344,15 +1465,22 @@ fn siblings(items: &[Item], k: usize) -> impl Iterator<Item = &Item> {
     items[start..end].iter().filter(move |i| i.depth == depth)
 }
 
-fn code(
+/// The columns a code block takes laid out whole: its longest line with
+/// tabs as four spaces, or its header and `margin`, plus the gutter.
+fn code_width(lang: Option<&str>, lines: &[String], margin: usize) -> usize {
+    let header = lang.map_or(0, |l| l.chars().count() + margin);
+    let columns = |line: &String| line.chars().map(|c| if c == '\t' { 4 } else { 1 }).sum();
+    let longest = lines.iter().map(columns).max().unwrap_or(0);
+    header.max(longest) + 2
+}
+
+/// The highlighted pieces of each code line.
+fn highlighted(
     lang: Option<&str>,
     lines: &[String],
     sources: &[usize],
-    overflow: Overflow,
-    width: usize,
     theme: &Theme,
-    out: &mut Vec<(Vec<Piece>, Mark)>,
-) {
+) -> Vec<Vec<Piece>> {
     let mut lexer = lang.and_then(Lexer::new);
     let mut expanded_lines = Vec::with_capacity(lines.len());
     for (k, line) in lines.iter().enumerate() {
@@ -1375,14 +1503,21 @@ fn code(
         };
         expanded_lines.push(expanded(classed, sources.get(k).copied()));
     }
+    expanded_lines
+}
+
+/// A code block of `highlighted` lines, `width` wide, its header row
+/// leaving the last `margin` columns free.
+fn code(
+    lang: Option<&str>,
+    highlighted: Vec<Vec<Piece>>,
+    overflow: Overflow,
+    margin: usize,
+    width: usize,
+    theme: &Theme,
+    out: &mut Vec<(Vec<Piece>, Mark)>,
+) {
     let kept = overflow == Overflow::Keep;
-    let width = if kept {
-        let header = lang.map_or(0, |l| l.chars().count());
-        let longest = expanded_lines.iter().map(|s| len(s)).max().unwrap_or(0);
-        width.max(header.max(longest) + 2)
-    } else {
-        width
-    };
     let inner = width.saturating_sub(2);
     let pad = |mut row: Vec<Piece>| {
         if kept {
@@ -1394,11 +1529,14 @@ fn code(
     if let Some(lang) = lang {
         let row = vec![
             ("┌ ".into(), theme.rule),
-            (lang.chars().take(inner).collect(), theme.lang),
+            (
+                lang.chars().take(inner.saturating_sub(margin)).collect(),
+                theme.lang,
+            ),
         ];
         out.push(pad(row));
     }
-    for segs in expanded_lines {
+    for segs in highlighted {
         if overflow == Overflow::Wrap && len(&segs) > inner {
             wrapped_code(segs, inner.max(1), theme, out);
             continue;
@@ -1469,25 +1607,26 @@ fn wrapped_code(segs: Vec<Piece>, inner: usize, theme: &Theme, out: &mut Vec<(Ve
     out.push((row, mark));
 }
 
-fn table(
+/// The words of column `c` of a table row.
+fn cell(row: &[Vec<Inline>], c: usize, theme: &Theme) -> Vec<Word> {
+    words(row.get(c).map_or(&[][..], |v| v), theme)
+}
+
+/// A table's column widths, shrunk widest first toward `width` but not
+/// below the floor of `columns`, and whether the table then fits.
+fn column_widths(
     header: &[Vec<Inline>],
     rows: &[Vec<Vec<Inline>>],
-    rules: bool,
     columns: RangeInclusive<usize>,
     width: usize,
     theme: &Theme,
-    out: &mut Vec<(Vec<Piece>, Mark)>,
-) {
+) -> (Vec<usize>, bool) {
     let cols = header.len();
-    let cell = |row: &[Vec<Inline>], c: usize| words(row.get(c).map_or(&[][..], |v| v), theme);
     let mut widths: Vec<usize> = (0..cols)
         .map(|c| {
             std::iter::once(header)
                 .chain(rows.iter().map(Vec::as_slice))
-                .map(|row| {
-                    let w = cell(row, c);
-                    len(&wrap(&w, usize::MAX)[0].0)
-                })
+                .map(|row| len(&wrap(&cell(row, c, theme), usize::MAX)[0].0))
                 .max()
                 .map_or(0, |w| w.min(*columns.end()))
         })
@@ -1497,14 +1636,29 @@ fn table(
         let widest = (0..cols).max_by_key(|&c| (widths[c], usize::MAX - c));
         match widest {
             Some(c) if widths[c] > *columns.start() => widths[c] -= 1,
-            _ => return stacked(header, rows, width, theme, out),
+            _ => return (widths, false),
         }
     }
+    (widths, true)
+}
+
+/// A table drawn at column `widths`, its rows `kept` wider than the width.
+fn table(
+    header: &[Vec<Inline>],
+    rows: &[Vec<Vec<Inline>>],
+    widths: &[usize],
+    rules: bool,
+    kept: bool,
+    theme: &Theme,
+    out: &mut Vec<(Vec<Piece>, Mark)>,
+) {
+    let cols = header.len();
+    let mark = Mark { kept, ..BREAK };
     let sep = || (" │ ".to_string(), theme.rule);
     let draw = |row: &[Vec<Inline>], style: Style, out: &mut Vec<(Vec<Piece>, Mark)>| {
         let wrapped: Vec<Vec<Vec<Piece>>> = (0..cols)
             .map(|c| {
-                let mut words = cell(row, c);
+                let mut words = cell(row, c, theme);
                 for (_, st) in words.iter_mut().flat_map(|w| &mut w.pieces) {
                     *st = st.patch(style);
                 }
@@ -1526,16 +1680,16 @@ fn table(
                 segs.extend(part);
                 segs.push((" ".repeat(fill), Style::new()));
             }
-            out.push((segs, BREAK));
+            out.push((segs, mark));
         }
     };
     draw(header, theme.header, out);
     let rule: Vec<String> = widths.iter().map(|&w| "─".repeat(w)).collect();
     let rule_line = vec![(rule.join("─┼─"), theme.rule)];
-    out.push((rule_line.clone(), BREAK));
+    out.push((rule_line.clone(), mark));
     for (n, row) in rows.iter().enumerate() {
         if rules && n > 0 {
-            out.push((rule_line.clone(), BREAK));
+            out.push((rule_line.clone(), mark));
         }
         draw(row, Style::new(), out);
     }
@@ -1561,7 +1715,7 @@ fn stacked(
             for (_, style) in label.iter_mut().flat_map(|w| &mut w.pieces) {
                 *style = style.patch(theme.rule);
             }
-            label.extend(words(row.get(c).map_or(&[][..], |v| v), theme));
+            label.extend(cell(row, c, theme));
             out.extend(unindented(wrap(&label, width)));
         }
     }
@@ -2980,5 +3134,204 @@ tab\tseparated\twords";
     fn a_page_bytes_are_the_bytes_of_its_string() {
         let page = parse("**a** `b`").render();
         assert_eq!(page.bytes(), page.string().into_bytes());
+    }
+
+    const WIDE_TABLE: &str = "| a | bbbbbbbbbbbbbbbb |\n|---|---|\n| x | y |";
+
+    #[test]
+    fn a_table_that_does_not_fit_is_kept_with_each_column_at_the_floor_or_narrower() {
+        let format = Format::builder().width(10).tables(Overflow::Keep);
+        let page = parse(WIDE_TABLE).render_with(format.build());
+        assert_eq!(
+            strings(page.rows()),
+            [
+                "a │ bbbbbbbb",
+                "  │ bbbbbbbb",
+                "──┼─────────",
+                "x │ y       "
+            ]
+        );
+    }
+
+    #[test]
+    fn a_table_that_does_not_fit_is_cut_at_the_width_under_cut() {
+        let format = Format::builder().width(10).tables(Overflow::Cut);
+        assert_eq!(
+            texts(WIDE_TABLE, format),
+            ["a │ bbbbbb", "  │ bbbbbb", "──┼───────", "x │ y     "]
+        );
+    }
+
+    #[test]
+    fn a_table_that_does_not_fit_is_drawn_as_records_by_default() {
+        let wrap = Format::builder().width(10).tables(Overflow::Wrap);
+        assert_eq!(
+            texts(WIDE_TABLE, wrap),
+            texts(WIDE_TABLE, Format::builder().width(10))
+        );
+        assert!(!texts(WIDE_TABLE, wrap).iter().any(|row| row.contains('┼')));
+    }
+
+    #[test]
+    fn a_table_that_fits_is_the_same_under_every_tables_setting() {
+        let md = "| a | b |\n|---|---|\n| 1 | 2 |";
+        let wrap = texts(md, Format::builder().width(8));
+        for overflow in [Overflow::Cut, Overflow::Keep] {
+            assert_eq!(texts(md, Format::builder().width(8).tables(overflow)), wrap);
+        }
+    }
+
+    #[test]
+    fn a_code_blocks_width_is_its_longest_line_with_tabs_as_four_plus_the_gutter() {
+        let doc = parse("```rust\n\tab\nc\n```\n\ntext");
+        assert_eq!(doc.blocks[0].width(), Some(8));
+        assert_eq!(doc.blocks[1].width(), None);
+    }
+
+    #[test]
+    fn a_code_blocks_width_counts_a_language_header_longer_than_its_lines() {
+        let doc = parse("```markdown\nab\n```");
+        assert_eq!(doc.blocks[0].width(), Some(10));
+    }
+
+    #[test]
+    fn a_code_blocks_width_is_the_width_keep_lays_it_out_at() {
+        let doc = parse("```rust\nfn main() {\n\tlet x = 1;\n}\n```");
+        let format = Format::builder().width(1).code(Overflow::Keep).build();
+        let rows = doc.render_with(format).rows().to_vec();
+        for row in strings(&rows) {
+            assert_eq!(Some(row.chars().count()), doc.blocks[0].width());
+        }
+    }
+
+    #[test]
+    fn a_code_margin_keeps_the_header_text_out_of_the_last_columns() {
+        let format = Format::builder().width(10).code_margin(5);
+        let rows = texts("```rust\nfn main() {}\n```", format);
+        assert_eq!(rows[0], "┌ rus     ");
+    }
+
+    #[test]
+    fn a_code_margin_widens_a_kept_block_whose_header_would_reach_it() {
+        let format = Format::builder()
+            .width(4)
+            .code(Overflow::Keep)
+            .code_margin(3);
+        assert_eq!(
+            texts("```markdown\nab\n```", format),
+            ["┌ markdown   ", "│ ab         "]
+        );
+    }
+
+    #[test]
+    fn a_code_margin_leaves_a_kept_block_alone_when_the_header_is_short() {
+        let format = Format::builder()
+            .width(4)
+            .code(Overflow::Keep)
+            .code_margin(2);
+        assert_eq!(
+            texts("```rs\n0123456789\n```", format),
+            ["┌ rs        ", "│ 0123456789"]
+        );
+    }
+
+    fn first_row(md: &str, format: FormatBuilder) -> Row {
+        parse(md).render_with(format.build()).rows()[0].clone()
+    }
+
+    #[test]
+    fn a_rows_links_are_the_columns_each_covers_and_its_index() {
+        let row = first_row("see [ab cd](u) and [é](v)", Format::builder().width(30));
+        assert_eq!(row.links(), [(4..9, 0), (14..15, 1)]);
+    }
+
+    #[test]
+    fn neighbouring_pieces_of_one_link_merge_and_of_two_links_do_not() {
+        let row = first_row("[a **b** c](u)", Format::builder().width(10));
+        assert!(row.pieces.len() > 2);
+        assert_eq!(row.links(), [(0..5, 0)]);
+        let row = first_row("[a](u)[b](v)", Format::builder().width(10));
+        assert_eq!(row.links(), [(0..1, 0), (1..2, 1)]);
+    }
+
+    #[test]
+    fn a_rows_sources_give_the_byte_of_each_column_and_none_for_padding() {
+        let row = first_row("é **b**", Format::builder().width(5));
+        assert_eq!(row.sources(), [Some(0), Some(2), Some(5), None, None]);
+    }
+
+    #[test]
+    fn a_code_rows_gutter_and_tab_have_no_source() {
+        let row = first_row("```\n\tb\n```", Format::builder().width(8));
+        let mut sources = vec![None; 6];
+        sources.extend([Some(5), None]);
+        assert_eq!(row.sources(), sources);
+    }
+
+    #[test]
+    fn a_block_renders_alone_with_its_links_indexed_as_in_the_document() {
+        let doc = parse("[a](u)\n\n[b](v)");
+        let format = Format::builder().width(3).build();
+        let page = doc.render_block(1, format);
+        assert_eq!(strings(page.rows()), ["b  "]);
+        assert_eq!(page.rows()[0].links(), [(0..1, 1)]);
+        assert!(page.string().contains("\x1b]8;;v\x1b\\"));
+    }
+
+    #[test]
+    fn a_rendered_block_is_its_rows_of_the_whole_document() {
+        let doc = parse("# h\n\npara\n\n- item");
+        let format = Format::builder().width(6).build();
+        let whole = doc.render_with(format);
+        assert_eq!(doc.render_block(1, format).rows(), &whole.rows()[2..3]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn rendering_a_block_past_the_last_panics() {
+        parse("a").render_block(1, Format::default());
+    }
+
+    #[test]
+    fn an_indent_puts_blank_columns_before_every_row_within_the_width() {
+        let format = Format::builder().width(5).indent(2);
+        let page = parse("a b c").render_with(format.build());
+        assert_eq!(strings(page.rows()), ["  a b", "  c  "]);
+        assert!(page.rows().iter().all(|row| row.lead == 2));
+    }
+
+    #[test]
+    fn an_indent_moves_link_columns_and_padding_rows_too() {
+        let format = Format::builder().width(5).indent(2).height(2);
+        let page = parse("[a](u)").render_with(format.build());
+        assert_eq!(strings(page.rows()), ["  a  ", "     "]);
+        assert_eq!(page.rows()[0].links(), [(2..3, 0)]);
+    }
+
+    #[test]
+    fn a_max_height_cuts_long_output_like_a_height() {
+        let cut = texts("a\n\nb\n\nc", Format::builder().width(3).max_height(2));
+        assert_eq!(cut, ["a  ", "…  "]);
+        assert_eq!(
+            cut,
+            texts("a\n\nb\n\nc", Format::builder().width(3).height(2))
+        );
+    }
+
+    #[test]
+    fn a_max_height_does_not_pad_short_output() {
+        assert_eq!(
+            texts("a", Format::builder().width(3).max_height(3)),
+            ["a  "]
+        );
+    }
+
+    #[test]
+    fn with_both_set_the_page_is_height_rows_but_no_more_than_max_height() {
+        let format = Format::builder().width(3);
+        assert_eq!(texts("a", format.height(5).max_height(2)), ["a  ", "   "]);
+        assert_eq!(texts("a", format.height(2).max_height(4)), ["a  ", "   "]);
+        let cut = format.height(4).max_height(2);
+        assert_eq!(texts("a\n\nb\n\nc", cut), ["a  ", "…  "]);
     }
 }

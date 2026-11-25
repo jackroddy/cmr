@@ -33,6 +33,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `_` inside a word, as in `snake_case`, stays as typed, and so does a
   marker with a space just inside it. The new variant and field break code that matches
   `Inline` without a wildcard or builds `Style` without `..`.
+- `FormatBuilder::tables` sets what happens to a table too wide for the
+  width at the column floor. `Overflow::Wrap`, the default, draws it as
+  records. `Keep` lays it out at its narrowest, wider than the width, and
+  `Cut` cuts those rows at the width.
+- `Block::width` is the columns a code block takes laid out whole, gutter
+  and language header included, and `None` for other blocks.
+- `FormatBuilder::code_margin` keeps columns free at the end of a code
+  block's header row. Under `Overflow::Keep` the block widens to keep them.
+- `Row::links` lists the columns each link covers in a row and its index
+  into `Document::links`.
+- `Row::sources` gives the source byte of the char at each column of a row,
+  and `None` where cmr drew the char.
+- `Document::render_block` lays out one block of a document alone, its
+  links indexed as in the whole document.
+- `FormatBuilder::indent` puts blank columns before every row and counts
+  them in the row's `lead`. The text is laid out in the width left.
+- `FormatBuilder::max_height` cuts long output as `height` does and never
+  pads short output.
 
 ### Changed
 
