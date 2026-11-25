@@ -3,7 +3,7 @@
   "title": "A row lists where its links are",
   "body": "coax makes links clickable. `link_runs` in its `src/ui.rs` walks every piece of every row, measures columns with unicode width, and merges neighbouring pieces of the same `Style::link` into one run with a row, a column, a width and the link index. Any program with clickable links needs the same walk.\n\n## Proposal\n\n`Row::links(&self) -> Vec<(Range<usize>, usize)>`: the columns each link covers in the row and the link's index into `Document::links`. cmr-b88cde lists this as follow-up work.",
   "type": "feature",
-  "status": "open",
+  "status": "closed",
   "priority": 2,
   "labels": [],
   "parent": null,
@@ -13,16 +13,19 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-11-25T21:51:12.625799116Z",
-  "updated_at": "2026-11-25T21:51:12.625799116Z",
-  "closed_at": null,
-  "close_reason": null,
-  "resolution": null,
+  "updated_at": "2026-11-25T22:30:32.920033867Z",
+  "closed_at": "2026-11-25T22:30:32.920033867Z",
+  "close_reason": "Landed in fff2263.",
+  "resolution": "done",
   "notes": [],
   "stamps": {
     "created": {
       "commit": "f455382",
       "branch": "dev"
     },
-    "closed": null
+    "closed": {
+      "commit": "fff2263",
+      "branch": "dev"
+    }
   }
 }
