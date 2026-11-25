@@ -1,0 +1,28 @@
+{
+  "id": "cmr-95db14",
+  "title": "A laid-out piece names the byte of the source it starts at",
+  "body": "`layout` and `layout_marked` return rows of `(String, Style)` pieces. A piece carries its look and, for link text, its link's index in `Style::link`, but nothing ties it to the text `parse` read. A program that lays out a document with `cmr` cannot tell which bytes of the markdown a cell on screen came from.\n\ncoax needs that to let a person mark a passage of an agent's reply and send the agent the passage's markdown: backticks, link targets and list markers included.\n\n## Proposal\n\n- `Style` gains `source: Option<usize>`: the byte offset, in the text given to `parse`, of the piece's first character, when the piece's text is a verbatim slice of that text. That covers text in headings, paragraphs, list items, table cells and quotes, plus inline code, bold text, link text and code block lines.\n- `source` is `None` for anything `cmr` draws itself: bullets and list numbers, quote bars, code gutters and headers, table borders and padding, rules, and spaces added at a join or a wrap.\n- A piece split by wrapping or cut by a column keeps the offset of its own first character.\n- Offsets stay relative to the whole text inside nested quotes and list items.",
+  "type": "feature",
+  "status": "open",
+  "priority": 2,
+  "labels": [],
+  "parent": null,
+  "blocked_by": [],
+  "related": [],
+  "assignee": null,
+  "lease_expires": null,
+  "defer_until": null,
+  "created_at": "2026-11-25T03:41:42.307812652Z",
+  "updated_at": "2026-11-25T03:41:42.307812652Z",
+  "closed_at": null,
+  "close_reason": null,
+  "resolution": null,
+  "notes": [],
+  "stamps": {
+    "created": {
+      "commit": "d13c805",
+      "branch": "dev"
+    },
+    "closed": null
+  }
+}
