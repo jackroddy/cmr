@@ -1,0 +1,28 @@
+{
+  "id": "cmr-f36178",
+  "title": "A column is measured by display width, not by char",
+  "body": "cmr counts one column per `char` wherever it measures text: wrapping, table column widths, `Block::width`, `Row::links` and `Row::sources`. A terminal draws most CJK characters and many emoji two columns wide, so a table holding them has its `│` and `─┼─` rule out of line, and a line wraps late. coax measures with display width, so it keeps its own `link_runs` and its own code block measuring instead of `Row::links` and `Block::width`, which would give wrong columns after wide text.\n\n## Proposal\n\nMeasure every width in display columns: two for East Asian wide and fullwidth characters and most emoji, zero for combining marks, one otherwise. cmr has no dependencies, so the table of wide ranges would live in cmr. `Row::sources` would give each column the byte of the character drawn there, so a wide character fills two entries.\n\n## Open\n\n- Whether to take a dependency on `unicode-width` instead of carrying the table. The crate's no-dependency rule says no.",
+  "type": "bug",
+  "status": "open",
+  "priority": 2,
+  "labels": [],
+  "parent": null,
+  "blocked_by": [],
+  "related": [],
+  "assignee": null,
+  "lease_expires": null,
+  "defer_until": null,
+  "created_at": "2026-11-25T22:45:06.825056417Z",
+  "updated_at": "2026-11-25T22:45:06.825056417Z",
+  "closed_at": null,
+  "close_reason": null,
+  "resolution": null,
+  "notes": [],
+  "stamps": {
+    "created": {
+      "commit": "fff2263",
+      "branch": "dev"
+    },
+    "closed": null
+  }
+}
