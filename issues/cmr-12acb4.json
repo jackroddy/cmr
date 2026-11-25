@@ -1,0 +1,28 @@
+{
+  "id": "cmr-12acb4",
+  "title": "A code block reports its natural width",
+  "body": "coax decides whether to pan a code block before rendering it. `kept_whole` in coax's `src/ui.rs` measures the longest line itself, counting a tab as 4 spaces, and adds cmr's 2-column gutter, which it hard-codes. It then reserves columns at the end of the header row for its copy glyph and toggles, which `Overflow::Keep` does not know about.\n\n## Proposal\n\n- `Block::width(&self) -> Option<usize>`: for a code block, the width it takes laid out whole, gutter and language header included.\n- A `Format` setting that keeps columns free at the end of a code block's header row, such as `.code_margin(n)`.\n\n## Open\n\n- Whether coax's copy glyph and toggles should instead be drawn by cmr as part of the header.",
+  "type": "feature",
+  "status": "open",
+  "priority": 2,
+  "labels": [],
+  "parent": null,
+  "blocked_by": [],
+  "related": [],
+  "assignee": null,
+  "lease_expires": null,
+  "defer_until": null,
+  "created_at": "2026-11-25T21:51:12.617451579Z",
+  "updated_at": "2026-11-25T21:51:12.617451579Z",
+  "closed_at": null,
+  "close_reason": null,
+  "resolution": null,
+  "notes": [],
+  "stamps": {
+    "created": {
+      "commit": "f455382",
+      "branch": "dev"
+    },
+    "closed": null
+  }
+}
