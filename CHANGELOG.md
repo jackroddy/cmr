@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A laid-out piece's `Style::source` holds the byte of the parsed text its
   text starts at, for text cmr takes verbatim from the source. Bullets,
   bars, gutters, padding and the spaces cmr adds have `None`.
+- Italics between single `*` or `_` markers, parsed as `Inline::Italic` and
+  drawn with `Style::italic`, which `text` writes as SGR 3. An `_` inside a
+  word, as in `snake_case`, stays as typed, and so does a marker with a
+  space just inside it. The new variant and field break code that matches
+  `Inline` without a wildcard or builds `Style` without `..`.
 
 ### Changed
 

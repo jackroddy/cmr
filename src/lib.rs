@@ -1,6 +1,6 @@
 //! A small markdown subset, parsed into blocks and laid out as
 //! lines of an exact width: headings, paragraphs, lists, fenced
-//! code, tables, rules, quotes, bold, inline code and links. Everything else stays
+//! code, tables, rules, quotes, bold, italics, inline code and links. Everything else stays
 //! literal text.
 
 mod hl;
@@ -33,6 +33,7 @@ pub enum Color {
 pub struct Style {
     pub fg: Option<Color>,
     pub bold: bool,
+    pub italic: bool,
     pub dim: bool,
     pub underline: bool,
     /// The index into the document's links, for link text.
@@ -47,6 +48,7 @@ impl Style {
         Style {
             fg: None,
             bold: false,
+            italic: false,
             dim: false,
             underline: false,
             link: None,
@@ -64,6 +66,11 @@ impl Style {
         self
     }
 
+    const fn italic(mut self) -> Style {
+        self.italic = true;
+        self
+    }
+
     const fn dim(mut self) -> Style {
         self.dim = true;
         self
@@ -78,6 +85,7 @@ impl Style {
         Style {
             fg: other.fg.or(self.fg),
             bold: self.bold || other.bold,
+            italic: self.italic || other.italic,
             dim: self.dim || other.dim,
             underline: self.underline || other.underline,
             link: other.link.or(self.link),
@@ -132,6 +140,9 @@ pub enum Inline {
     Code(String, Option<usize>),
     /// Text between `**` markers, which may hold inline code and links.
     Bold(Vec<Inline>),
+    /// Text between single `*` or `_` markers, which may hold inline code
+    /// and links.
+    Italic(Vec<Inline>),
     /// Link text, drawn in place of `[text](target)`. The text may hold
     /// bold and inline code.
     Link {
@@ -257,7 +268,7 @@ pub fn links(blocks: &[Block]) -> Vec<Link> {
 fn collect_links(text: &[Inline], out: &mut Vec<Link>) {
     for inline in text {
         match inline {
-            Inline::Bold(inner) => collect_links(inner, out),
+            Inline::Bold(inner) | Inline::Italic(inner) => collect_links(inner, out),
             Inline::Link { link, .. } => out.push(link.clone()),
             Inline::Text(..) | Inline::Code(..) => {}
         }
@@ -507,8 +518,9 @@ fn list_item(src: &str, line: &str, next: &mut usize) -> Option<(Item, usize)> {
 }
 
 /// The inlines of `line`, a slice of `src`: a run of backticks opens code that
-/// the next run of the same length closes, and `**` opens bold
-/// that the next `**` closes. A link is `[text](target)` or
+/// the next run of the same length closes, `**` opens bold
+/// that the next `**` closes, and a single `*` or `_` opens italics
+/// that the next one closes. A link is `[text](target)` or
 /// `[text](target "title")`, numbered from `*next`. Bold and link
 /// text are read again for the inlines inside them. An unmatched
 /// run or bracket is text.
@@ -516,7 +528,7 @@ fn inlines(src: &str, line: &str, next: &mut usize) -> Vec<Inline> {
     let mut out = Vec::new();
     let mut from = 0;
     let mut rest = line;
-    while let Some(start) = rest.find(['`', '*', '[']) {
+    while let Some(start) = rest.find(['`', '*', '_', '[']) {
         let after = &rest[start..];
         let text = &line[from..line.len() - after.len()];
         if let Some(inside) = after.strip_prefix('[') {
@@ -549,8 +561,17 @@ fn inlines(src: &str, line: &str, next: &mut usize) -> Vec<Inline> {
             }
             continue;
         }
-        if let Some(tail) = after.strip_prefix('*') {
-            rest = tail;
+        if let Some(mark) = after.chars().next().filter(|&c| c == '*' || c == '_') {
+            let body = &after[1..];
+            match emphasis(text, body, mark) {
+                Some(end) => {
+                    push_text(&mut out, src, text);
+                    out.push(Inline::Italic(inlines(src, &body[..end], next)));
+                    rest = &body[end + 1..];
+                    from = line.len() - rest.len();
+                }
+                None => rest = body,
+            }
             continue;
         }
         let ticks = after.len() - after.trim_start_matches('`').len();
@@ -570,6 +591,27 @@ fn inlines(src: &str, line: &str, next: &mut usize) -> Vec<Inline> {
     }
     push_text(&mut out, src, &line[from..]);
     out
+}
+
+/// Where in `body` the italics that `mark` opens end, `None` when it
+/// opens none. `before` is the text ahead of `mark`.
+fn emphasis(before: &str, body: &str, mark: char) -> Option<usize> {
+    let inside_word = |c: Option<char>| mark == '_' && c.is_some_and(char::is_alphanumeric);
+    if inside_word(before.chars().last()) || body.starts_with(char::is_whitespace) {
+        return None;
+    }
+    body.char_indices().skip(1).find_map(|(at, c)| {
+        let prev = body[..at].chars().last()?;
+        let after = body[at + 1..].chars().next();
+
+        // a `*` beside another is half of a bold marker
+        let closes = c == mark
+            && !prev.is_whitespace()
+            && prev != '*'
+            && after != Some('*')
+            && !inside_word(after);
+        closes.then_some(at)
+    })
 }
 
 /// Push `text`, a slice of `src`, unless it is empty.
@@ -714,6 +756,9 @@ fn sgr(style: Style) -> String {
     }
     if style.dim {
         codes.push("2".to_string());
+    }
+    if style.italic {
+        codes.push("3".to_string());
     }
     if style.underline {
         codes.push("4".to_string());
@@ -879,6 +924,7 @@ fn push_words(text: &[Inline], style: Style, theme: &Theme, out: &mut Vec<Word>,
                 push_seg(&mut word.pieces, c.clone(), style);
             }
             Inline::Bold(inner) => push_words(inner, style.bold(), theme, out, word),
+            Inline::Italic(inner) => push_words(inner, style.italic(), theme, out, word),
             Inline::Link { text, index, .. } => {
                 let link = Style {
                     link: Some(*index),
@@ -1323,6 +1369,7 @@ mod tests {
                 },
                 Inline::Code(c, _) => out.push(Inline::Code(c, None)),
                 Inline::Bold(inner) => out.push(Inline::Bold(unsourced_inlines(inner))),
+                Inline::Italic(inner) => out.push(Inline::Italic(unsourced_inlines(inner))),
                 Inline::Link { text, index, link } => out.push(Inline::Link {
                     text: unsourced_inlines(text),
                     index,
@@ -1780,6 +1827,57 @@ mod tests {
     fn bold_in_a_table_cell_is_bold() {
         let lines = render("| a | b |\n|---|---|\n| **x** | y |", 20);
         assert_eq!(bold_pieces(&lines[2..]), ["x"]);
+    }
+
+    #[test]
+    fn text_between_single_stars_or_underscores_is_italic() {
+        assert_eq!(
+            unsourced(parse("a *b c* and _d_")),
+            [Block::Paragraph(vec![
+                Inline::Text("a ".into(), None),
+                Inline::Italic(vec![Inline::Text("b c".into(), None)]),
+                Inline::Text(" and ".into(), None),
+                Inline::Italic(vec![Inline::Text("d".into(), None)]),
+            ])]
+        );
+        let lines = render("a *b c* d", 20);
+        let italic: String = lines[0]
+            .iter()
+            .filter(|p| p.1.italic)
+            .map(|p| p.0.as_str())
+            .collect();
+        assert_eq!(italic, "bc");
+        assert_eq!(text("a *b*", 10, true), ["a \x1b[3mb\x1b[0m"]);
+    }
+
+    #[test]
+    fn italics_hold_bold_code_and_links() {
+        assert_eq!(
+            unsourced(parse("*a **b** `c` [d](t)*")),
+            [Block::Paragraph(vec![Inline::Italic(vec![
+                Inline::Text("a ".into(), None),
+                Inline::Bold(vec![Inline::Text("b".into(), None)]),
+                Inline::Text(" ".into(), None),
+                Inline::Code("c".into(), None),
+                Inline::Text(" ".into(), None),
+                Inline::Link {
+                    text: vec![Inline::Text("d".into(), None)],
+                    index: 0,
+                    link: link_to("t"),
+                },
+            ])])]
+        );
+    }
+
+    #[test]
+    fn a_marker_with_a_space_inside_or_an_underscore_in_a_word_stays_literal() {
+        for md in ["2 * 3 * 4", "snake_case_name", "a * b", "_ a_", "*a"] {
+            assert_eq!(
+                unsourced(parse(md)),
+                [Block::Paragraph(vec![Inline::Text(md.into(), None)])],
+                "{md:?}"
+            );
+        }
     }
 
     #[test]
