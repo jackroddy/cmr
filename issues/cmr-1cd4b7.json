@@ -3,7 +3,7 @@
   "title": "A row gives the source byte of each column",
   "body": "coax maps a selection on screen back to the markdown it came from. `row_sources` in its `src/ui.rs` takes each piece's `Style::source`, the byte its text starts at, and expands it to one byte per character after the row's `lead`, with `None` where cmr drew something of its own.\n\n## Proposal\n\n`Row::sources(&self) -> Vec<Option<usize>>`, one entry per column of the row.",
   "type": "feature",
-  "status": "open",
+  "status": "closed",
   "priority": 2,
   "labels": [],
   "parent": null,
@@ -13,16 +13,19 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-11-25T21:51:12.634128782Z",
-  "updated_at": "2026-11-25T21:51:12.634128782Z",
-  "closed_at": null,
-  "close_reason": null,
-  "resolution": null,
+  "updated_at": "2026-11-25T22:30:32.927825586Z",
+  "closed_at": "2026-11-25T22:30:32.927825586Z",
+  "close_reason": "Landed in fff2263.",
+  "resolution": "done",
   "notes": [],
   "stamps": {
     "created": {
       "commit": "f455382",
       "branch": "dev"
     },
-    "closed": null
+    "closed": {
+      "commit": "fff2263",
+      "branch": "dev"
+    }
   }
 }
