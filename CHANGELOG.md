@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caller sets it, `layout` draws the header rule again between body rows.
   The new field breaks code that builds `Block::Table` or matches it without
   `..`.
+- A laid-out piece's `Style::source` holds the byte of the parsed text its
+  text starts at, for text cmr takes verbatim from the source. Bullets,
+  bars, gutters, padding and the spaces cmr adds have `None`.
+
+### Changed
+
+- `Inline::Text` and `Inline::Code` hold the byte their text starts at.
+  `Block::Code` has a `sources` field with the byte each line starts at.
+  The space that joins two lines of a paragraph is its own `Inline::Text`,
+  with `None`. `Block::Code`'s lines keep their tabs. `layout` draws each
+  tab as four spaces. These changes break code that builds the types or
+  matches them without `..`.
 
 ## [0.2.0] - 2026-11-12
 

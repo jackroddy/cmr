@@ -37,6 +37,9 @@ pub struct Style {
     pub underline: bool,
     /// The index into the document's links, for link text.
     pub link: Option<usize>,
+    /// The byte of the parsed text the piece's text starts at, when the
+    /// text is a slice of it.
+    pub source: Option<usize>,
 }
 
 impl Style {
@@ -47,6 +50,7 @@ impl Style {
             dim: false,
             underline: false,
             link: None,
+            source: None,
         }
     }
 
@@ -77,6 +81,7 @@ impl Style {
             dim: self.dim || other.dim,
             underline: self.underline || other.underline,
             link: other.link.or(self.link),
+            source: other.source.or(self.source),
         }
     }
 }
@@ -120,8 +125,11 @@ const GUTTERED: Mark = Mark {
 /// A run of text inside a paragraph, list item or table cell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Inline {
-    Text(String),
-    Code(String),
+    /// Text and the byte of the parsed text it starts at, `None` for
+    /// the space that joins two lines.
+    Text(String, Option<usize>),
+    /// Inline code without its backticks, and the byte it starts at.
+    Code(String, Option<usize>),
     /// Text between `**` markers, which may hold inline code and links.
     Bold(Vec<Inline>),
     /// Link text, drawn in place of `[text](target)`. The text may hold
@@ -163,6 +171,8 @@ pub enum Block {
     Code {
         lang: Option<String>,
         lines: Vec<String>,
+        /// The byte of the parsed text each line starts at.
+        sources: Vec<usize>,
         /// Whether a line wider than the block wraps onto
         /// continuation rows, where otherwise it is cut.
         wrap: bool,
@@ -220,7 +230,8 @@ pub fn render(text: &str, width: usize) -> Vec<Row> {
 
 /// The blocks of `text`, read a line at a time.
 pub fn parse(text: &str) -> Vec<Block> {
-    parse_from(text, &mut 0)
+    let lines: Vec<&str> = text.lines().collect();
+    parse_lines(text, &lines, &mut 0)
 }
 
 /// The links of `blocks` in document order, so that `links[i]` is
@@ -248,14 +259,14 @@ fn collect_links(text: &[Inline], out: &mut Vec<Link>) {
         match inline {
             Inline::Bold(inner) => collect_links(inner, out),
             Inline::Link { link, .. } => out.push(link.clone()),
-            Inline::Text(_) | Inline::Code(_) => {}
+            Inline::Text(..) | Inline::Code(..) => {}
         }
     }
 }
 
-/// `parse`, numbering links from `*next`.
-fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
-    let lines: Vec<&str> = text.lines().collect();
+/// `parse` for `lines`, each a slice of `src`, numbering links from
+/// `*next`.
+fn parse_lines(src: &str, lines: &[&str], next: &mut usize) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut para: Vec<Inline> = Vec::new();
     let mut list: Vec<Item> = Vec::new();
@@ -270,20 +281,23 @@ fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
                 inner.push(rest);
                 i += 1;
             }
-            blocks.push(Block::Quote(parse_from(&inner.join("\n"), next)));
+            blocks.push(Block::Quote(parse_lines(src, &inner, next)));
             continue;
         }
         if let Some((ticks, lang, tab)) = fence(line) {
             flush(&mut blocks, &mut para, &mut list);
             let mut code = Vec::new();
+            let mut sources = Vec::new();
             i += 1;
             while i < lines.len() && !closes_fence(lines[i], ticks) {
-                code.push(lines[i].replace('\t', "    "));
+                code.push(lines[i].to_string());
+                sources.push(offset(src, lines[i]));
                 i += 1;
             }
             blocks.push(Block::Code {
                 lang,
                 lines: code,
+                sources,
                 wrap: false,
                 tab,
             });
@@ -292,11 +306,11 @@ fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
         }
         if line.contains('|') && lines.get(i + 1).is_some_and(|l| delimiter_row(l)) {
             flush(&mut blocks, &mut para, &mut list);
-            let header = cells(line, next);
+            let header = cells(src, line, next);
             i += 2;
             let mut rows = Vec::new();
             while i < lines.len() && lines[i].contains('|') {
-                rows.push(cells(lines[i], next));
+                rows.push(cells(src, lines[i], next));
                 i += 1;
             }
             blocks.push(Block::Table {
@@ -310,7 +324,7 @@ fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
             flush(&mut blocks, &mut para, &mut list);
             blocks.push(Block::Heading {
                 level,
-                text: inlines(rest, next),
+                text: inlines(src, rest, next),
             });
             i += 1;
             continue;
@@ -321,7 +335,7 @@ fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
             i += 1;
             continue;
         }
-        if let Some((item, col)) = list_item(line, next) {
+        if let Some((item, col)) = list_item(src, line, next) {
             flush_paragraph(&mut blocks, &mut para);
             // a top-level item of the other kind starts a new list
             let other_kind = item.depth == 0
@@ -343,13 +357,13 @@ fn parse_from(text: &str, next: &mut usize) -> Vec<Block> {
         }
         if let Some(last) = list.last_mut() {
             if indent(line) >= text_column {
-                join(&mut last.text, inlines(line.trim(), next));
+                join(&mut last.text, inlines(src, line.trim(), next));
                 i += 1;
                 continue;
             }
             flush(&mut blocks, &mut para, &mut list);
         }
-        join(&mut para, inlines(line.trim(), next));
+        join(&mut para, inlines(src, line.trim(), next));
         i += 1;
     }
     flush(&mut blocks, &mut para, &mut list);
@@ -372,22 +386,14 @@ fn flush_paragraph(blocks: &mut Vec<Block>, para: &mut Vec<Inline>) {
 /// Append a line's inlines to `to`, a space between the lines.
 fn join(to: &mut Vec<Inline>, line: Vec<Inline>) {
     if !to.is_empty() {
-        push_text(to, " ");
+        to.push(Inline::Text(" ".into(), None));
     }
-    for inline in line {
-        match inline {
-            Inline::Text(t) => push_text(to, &t),
-            other => to.push(other),
-        }
-    }
+    to.extend(line);
 }
 
-fn push_text(to: &mut Vec<Inline>, s: &str) {
-    if let Some(Inline::Text(t)) = to.last_mut() {
-        t.push_str(s);
-    } else {
-        to.push(Inline::Text(s.to_string()));
-    }
+/// The byte of `src` that `part`, a slice of it, starts at.
+fn offset(src: &str, part: &str) -> usize {
+    part.as_ptr() as usize - src.as_ptr() as usize
 }
 
 /// The level and text of a heading line: one to three `#`, a
@@ -405,7 +411,7 @@ fn heading(line: &str) -> Option<(u8, &str)> {
 /// A quote line without its marker: `> ` or a bare `>`.
 fn quoted(line: &str) -> Option<&str> {
     if line == ">" {
-        return Some("");
+        return Some(&line[1..]);
     }
     line.strip_prefix("> ")
 }
@@ -458,10 +464,10 @@ fn split_cells(line: &str) -> Vec<&str> {
     t.split('|').collect()
 }
 
-fn cells(line: &str, next: &mut usize) -> Vec<Vec<Inline>> {
+fn cells(src: &str, line: &str, next: &mut usize) -> Vec<Vec<Inline>> {
     split_cells(line)
         .into_iter()
-        .map(|c| inlines(c.trim(), next))
+        .map(|c| inlines(src, c.trim(), next))
         .collect()
 }
 
@@ -474,7 +480,7 @@ fn indent(line: &str) -> usize {
 }
 
 /// A list item and the column its text starts at.
-fn list_item(line: &str, next: &mut usize) -> Option<(Item, usize)> {
+fn list_item(src: &str, line: &str, next: &mut usize) -> Option<(Item, usize)> {
     let lead = indent(line);
     let rest = line.trim_start();
     let (number, after) = if let Some(after) = rest
@@ -495,64 +501,55 @@ fn list_item(line: &str, next: &mut usize) -> Option<(Item, usize)> {
     let item = Item {
         depth: lead / 2,
         number,
-        text: inlines(text.trim_end(), next),
+        text: inlines(src, text.trim_end(), next),
     };
     Some((item, lead + marker + gap))
 }
 
-/// The inlines of one line: a run of backticks opens code that
+/// The inlines of `line`, a slice of `src`: a run of backticks opens code that
 /// the next run of the same length closes, and `**` opens bold
 /// that the next `**` closes. A link is `[text](target)` or
 /// `[text](target "title")`, numbered from `*next`. Bold and link
 /// text are read again for the inlines inside them. An unmatched
 /// run or bracket is text.
-fn inlines(line: &str, next: &mut usize) -> Vec<Inline> {
+fn inlines(src: &str, line: &str, next: &mut usize) -> Vec<Inline> {
     let mut out = Vec::new();
-    let mut text = String::new();
+    let mut from = 0;
     let mut rest = line;
     while let Some(start) = rest.find(['`', '*', '[']) {
-        text.push_str(&rest[..start]);
         let after = &rest[start..];
+        let text = &line[from..line.len() - after.len()];
         if let Some(inside) = after.strip_prefix('[') {
             match link(after) {
                 Some((label, link, tail)) => {
-                    if !text.is_empty() {
-                        out.push(Inline::Text(std::mem::take(&mut text)));
-                    }
+                    push_text(&mut out, src, text);
                     let index = *next;
                     *next += 1;
                     out.push(Inline::Link {
-                        text: inlines(label, next),
+                        text: inlines(src, label, next),
                         index,
                         link,
                     });
                     rest = tail;
+                    from = line.len() - rest.len();
                 }
-                None => {
-                    text.push('[');
-                    rest = inside;
-                }
+                None => rest = inside,
             }
             continue;
         }
         if let Some(body) = after.strip_prefix("**") {
             match body.find("**").filter(|&end| end > 0) {
                 Some(end) => {
-                    if !text.is_empty() {
-                        out.push(Inline::Text(std::mem::take(&mut text)));
-                    }
-                    out.push(Inline::Bold(inlines(&body[..end], next)));
+                    push_text(&mut out, src, text);
+                    out.push(Inline::Bold(inlines(src, &body[..end], next)));
                     rest = &body[end + 2..];
+                    from = line.len() - rest.len();
                 }
-                None => {
-                    text.push_str("**");
-                    rest = body;
-                }
+                None => rest = body,
             }
             continue;
         }
         if let Some(tail) = after.strip_prefix('*') {
-            text.push('*');
             rest = tail;
             continue;
         }
@@ -560,25 +557,26 @@ fn inlines(line: &str, next: &mut usize) -> Vec<Inline> {
         let body = &after[ticks..];
         match closing(body, ticks) {
             Some(end) => {
-                if !text.is_empty() {
-                    out.push(Inline::Text(std::mem::take(&mut text)));
-                }
+                push_text(&mut out, src, text);
                 if end > 0 {
-                    out.push(Inline::Code(body[..end].to_string()));
+                    let source = Some(offset(src, body));
+                    out.push(Inline::Code(body[..end].to_string(), source));
                 }
                 rest = &body[end + ticks..];
+                from = line.len() - rest.len();
             }
-            None => {
-                text.push_str(&after[..ticks]);
-                rest = body;
-            }
+            None => rest = body,
         }
     }
-    text.push_str(rest);
-    if !text.is_empty() {
-        out.push(Inline::Text(text));
-    }
+    push_text(&mut out, src, &line[from..]);
     out
+}
+
+/// Push `text`, a slice of `src`, unless it is empty.
+fn push_text(out: &mut Vec<Inline>, src: &str, text: &str) {
+    if !text.is_empty() {
+        out.push(Inline::Text(text.to_string(), Some(offset(src, text))));
+    }
 }
 
 /// The text, link and remainder of a link at the start of `s`. The
@@ -654,7 +652,14 @@ pub fn text(text: &str, width: usize, color: bool) -> Vec<String> {
         .map(|(segs, _)| {
             let mut merged = Vec::new();
             for (s, style) in segs {
-                push_seg(&mut merged, s, style);
+                push_seg(
+                    &mut merged,
+                    s,
+                    Style {
+                        source: None,
+                        ..style
+                    },
+                );
             }
             let mut out = String::new();
             for (s, style) in trimmed(merged, color) {
@@ -755,8 +760,20 @@ fn lines(blocks: &[Block], width: usize) -> Vec<(Vec<Piece>, Mark)> {
             Block::Paragraph(text) => out.extend(unindented(wrap(&words(text, theme), width))),
             Block::List(items) => list(items, width, theme, &mut out),
             Block::Code {
-                lang, lines, wrap, ..
-            } => code(lang.as_deref(), lines, *wrap, width, theme, &mut out),
+                lang,
+                lines,
+                sources,
+                wrap,
+                ..
+            } => code(
+                lang.as_deref(),
+                lines,
+                sources,
+                *wrap,
+                width,
+                theme,
+                &mut out,
+            ),
             Block::Table {
                 header,
                 rows,
@@ -801,22 +818,49 @@ fn push_seg(to: &mut Vec<Piece>, s: String, style: Style) {
         return;
     }
     match to.last_mut() {
-        Some((t, last)) if *last == style => t.push_str(&s),
+        Some((t, last)) if continues(t, *last, style) => t.push_str(&s),
         _ => to.push((s, style)),
     }
+}
+
+/// Whether a piece in `next` may join the piece `text` in `last`: the
+/// same look, and the text going on where `text` ends in the source.
+fn continues(text: &str, last: Style, next: Style) -> bool {
+    let source = match (last.source, next.source) {
+        (None, None) => true,
+        (Some(at), Some(next)) => at + text.len() == next,
+        _ => false,
+    };
+    source
+        && Style {
+            source: None,
+            ..last
+        } == Style {
+            source: None,
+            ..next
+        }
 }
 
 fn len(segs: &[Piece]) -> usize {
     segs.iter().map(|(s, _)| s.chars().count()).sum()
 }
 
+/// A word to wrap.
+#[derive(Default)]
+struct Word {
+    pieces: Vec<Piece>,
+    /// The byte of a space before the word in the source, which a wrap
+    /// may draw between this word and the one before.
+    space: Option<usize>,
+}
+
 /// The words of a run of inlines: whitespace in text, bold or
 /// link text splits them, and inline code joins whatever touches it.
-fn words(text: &[Inline], theme: &Theme) -> Vec<Vec<Piece>> {
+fn words(text: &[Inline], theme: &Theme) -> Vec<Word> {
     let mut out = Vec::new();
-    let mut word: Vec<Piece> = Vec::new();
+    let mut word = Word::default();
     push_words(text, Style::new(), theme, &mut out, &mut word);
-    if !word.is_empty() {
+    if !word.pieces.is_empty() {
         out.push(word);
     }
     out
@@ -824,16 +868,16 @@ fn words(text: &[Inline], theme: &Theme) -> Vec<Vec<Piece>> {
 
 /// `words` for `text` drawn over `style`, adding to the words in `out`
 /// and the unfinished `word`.
-fn push_words(
-    text: &[Inline],
-    style: Style,
-    theme: &Theme,
-    out: &mut Vec<Vec<Piece>>,
-    word: &mut Vec<Piece>,
-) {
+fn push_words(text: &[Inline], style: Style, theme: &Theme, out: &mut Vec<Word>, word: &mut Word) {
     for inline in text {
         match inline {
-            Inline::Code(c) => push_seg(word, c.clone(), style.patch(theme.code)),
+            Inline::Code(c, source) => {
+                let style = Style {
+                    source: *source,
+                    ..style.patch(theme.code)
+                };
+                push_seg(&mut word.pieces, c.clone(), style);
+            }
             Inline::Bold(inner) => push_words(inner, style.bold(), theme, out, word),
             Inline::Link { text, index, .. } => {
                 let link = Style {
@@ -842,14 +886,16 @@ fn push_words(
                 };
                 push_words(text, style.patch(link), theme, out, word);
             }
-            Inline::Text(t) => {
-                for ch in t.chars() {
+            Inline::Text(t, source) => {
+                for (i, ch) in t.char_indices() {
+                    let source = source.map(|at| at + i);
                     if ch.is_whitespace() {
-                        if !word.is_empty() {
+                        if !word.pieces.is_empty() {
                             out.push(std::mem::take(word));
+                            word.space = source.filter(|_| ch == ' ');
                         }
                     } else {
-                        push_seg(word, ch.to_string(), style);
+                        push_seg(&mut word.pieces, ch.to_string(), Style { source, ..style });
                     }
                 }
             }
@@ -860,32 +906,37 @@ fn push_words(
 /// Greedy word wrap at `width`, a single space between words; a
 /// word longer than the width is cut across lines. No words make
 /// one empty line. Each line comes with how it follows the one above.
-fn wrap(words: &[Vec<Piece>], width: usize) -> Vec<(Vec<Piece>, Join)> {
+fn wrap(words: &[Word], width: usize) -> Vec<(Vec<Piece>, Join)> {
     let width = width.max(1);
     let mut lines = Vec::new();
     let mut line: Vec<Piece> = Vec::new();
     let mut join = Join::Break;
     for word in words {
-        let n = len(word);
+        let n = len(&word.pieces);
         if !line.is_empty() && len(&line) + 1 + n <= width {
-            push_seg(&mut line, " ".into(), Style::new());
+            let space = Style {
+                source: word.space,
+                ..Style::new()
+            };
+            push_seg(&mut line, " ".into(), space);
         } else if !line.is_empty() {
             lines.push((std::mem::take(&mut line), join));
             join = Join::Space;
         }
         if n <= width {
-            for (s, style) in word {
+            for (s, style) in &word.pieces {
                 push_seg(&mut line, s.clone(), *style);
             }
             continue;
         }
-        for (s, style) in word {
-            for ch in s.chars() {
+        for (s, style) in &word.pieces {
+            for (i, ch) in s.char_indices() {
                 if len(&line) == width {
                     lines.push((std::mem::take(&mut line), join));
                     join = Join::Word;
                 }
-                push_seg(&mut line, ch.to_string(), *style);
+                let source = style.source.map(|at| at + i);
+                push_seg(&mut line, ch.to_string(), Style { source, ..*style });
             }
         }
     }
@@ -970,6 +1021,7 @@ fn siblings(items: &[Item], k: usize) -> impl Iterator<Item = &Item> {
 fn code(
     lang: Option<&str>,
     lines: &[String],
+    sources: &[usize],
     wrap: bool,
     width: usize,
     theme: &Theme,
@@ -984,8 +1036,8 @@ fn code(
         out.push((row, GUTTERED));
     }
     let mut lexer = lang.and_then(Lexer::new);
-    for line in lines {
-        let segs: Vec<Piece> = match &mut lexer {
+    for (k, line) in lines.iter().enumerate() {
+        let classed: Vec<Piece> = match &mut lexer {
             Some(lexer) => lexer
                 .line(line)
                 .into_iter()
@@ -1002,6 +1054,7 @@ fn code(
                 .collect(),
             None => vec![(line.clone(), Style::new())],
         };
+        let segs = expanded(classed, sources.get(k).copied());
         if wrap && len(&segs) > inner {
             wrapped_code(segs, inner.max(1), theme, out);
             continue;
@@ -1022,6 +1075,31 @@ fn code(
     }
 }
 
+/// The highlighted pieces of a code line that starts at byte `source`,
+/// each with the byte it starts at and a tab drawn as four spaces.
+fn expanded(classed: Vec<Piece>, source: Option<usize>) -> Vec<Piece> {
+    let mut out = Vec::new();
+    let mut at = source;
+    for (s, style) in classed {
+        for (n, part) in s.split('\t').enumerate() {
+            if n > 0 {
+                push_seg(&mut out, "    ".into(), style);
+                at = at.map(|a| a + 1);
+            }
+            push_seg(
+                &mut out,
+                part.to_string(),
+                Style {
+                    source: at,
+                    ..style
+                },
+            );
+            at = at.map(|a| a + part.len());
+        }
+    }
+    out
+}
+
 /// One highlighted line split into rows of `inner` characters,
 /// each row after the first under a `┆ ` gutter.
 fn wrapped_code(segs: Vec<Piece>, inner: usize, theme: &Theme, out: &mut Vec<(Vec<Piece>, Mark)>) {
@@ -1039,7 +1117,8 @@ fn wrapped_code(segs: Vec<Piece>, inner: usize, theme: &Theme, out: &mut Vec<(Ve
             }
             let end = rest.char_indices().nth(room).map_or(rest.len(), |(i, _)| i);
             room -= rest[..end].chars().count();
-            push_seg(&mut row, rest[..end].to_string(), style);
+            let source = style.source.map(|at| at + s.len() - rest.len());
+            push_seg(&mut row, rest[..end].to_string(), Style { source, ..style });
             rest = &rest[end..];
         }
     }
@@ -1080,10 +1159,10 @@ fn table(
     let draw = |row: &[Vec<Inline>], style: Style, out: &mut Vec<(Vec<Piece>, Mark)>| {
         let wrapped: Vec<Vec<Vec<Piece>>> = (0..cols)
             .map(|c| {
-                let words: Vec<Vec<Piece>> = cell(row, c)
-                    .into_iter()
-                    .map(|w| w.into_iter().map(|(s, st)| (s, st.patch(style))).collect())
-                    .collect();
+                let mut words = cell(row, c);
+                for (_, st) in words.iter_mut().flat_map(|w| &mut w.pieces) {
+                    *st = st.patch(style);
+                }
                 wrap(&words, widths[c])
                     .into_iter()
                     .map(|(line, _)| line)
@@ -1132,12 +1211,10 @@ fn stacked(
         for (c, head) in header.iter().enumerate() {
             let mut label = words(head, theme);
             if let Some(last) = label.last_mut() {
-                last.push((":".into(), Style::new()));
+                last.pieces.push((":".into(), Style::new()));
             }
-            for word in &mut label {
-                for (_, style) in word.iter_mut() {
-                    *style = style.patch(theme.rule);
-                }
+            for (_, style) in label.iter_mut().flat_map(|w| &mut w.pieces) {
+                *style = style.patch(theme.rule);
             }
             label.extend(words(row.get(c).map_or(&[][..], |v| v), theme));
             out.extend(unindented(wrap(&label, width)));
@@ -1158,6 +1235,90 @@ mod tests {
 
     fn padded(lines: &[&str], width: usize) -> Vec<String> {
         lines.iter().map(|l| format!("{l:<width$}")).collect()
+    }
+
+    fn look(style: Style) -> Style {
+        Style {
+            source: None,
+            ..style
+        }
+    }
+
+    fn looks(rows: Vec<Row>) -> Vec<Vec<(String, Style)>> {
+        rows.into_iter()
+            .map(|row| row.into_iter().map(|(s, st)| (s, look(st))).collect())
+            .collect()
+    }
+
+    // the line join's space and its neighbours are merged again, so a
+    // test can write a paragraph's text as one run
+    fn unsourced(blocks: Vec<Block>) -> Vec<Block> {
+        blocks
+            .into_iter()
+            .map(|block| match block {
+                Block::Heading { level, text } => Block::Heading {
+                    level,
+                    text: unsourced_inlines(text),
+                },
+                Block::Paragraph(text) => Block::Paragraph(unsourced_inlines(text)),
+                Block::List(items) => Block::List(
+                    items
+                        .into_iter()
+                        .map(|i| Item {
+                            text: unsourced_inlines(i.text),
+                            ..i
+                        })
+                        .collect(),
+                ),
+                Block::Code {
+                    lang,
+                    lines,
+                    wrap,
+                    tab,
+                    ..
+                } => Block::Code {
+                    lang,
+                    lines,
+                    sources: Vec::new(),
+                    wrap,
+                    tab,
+                },
+                Block::Table {
+                    header,
+                    rows,
+                    rules,
+                } => Block::Table {
+                    header: header.into_iter().map(unsourced_inlines).collect(),
+                    rows: rows
+                        .into_iter()
+                        .map(|r| r.into_iter().map(unsourced_inlines).collect())
+                        .collect(),
+                    rules,
+                },
+                Block::Rule => Block::Rule,
+                Block::Quote(inner) => Block::Quote(unsourced(inner)),
+            })
+            .collect()
+    }
+
+    fn unsourced_inlines(text: Vec<Inline>) -> Vec<Inline> {
+        let mut out: Vec<Inline> = Vec::new();
+        for inline in text {
+            match inline {
+                Inline::Text(t, _) => match out.last_mut() {
+                    Some(Inline::Text(last, _)) => last.push_str(&t),
+                    _ => out.push(Inline::Text(t, None)),
+                },
+                Inline::Code(c, _) => out.push(Inline::Code(c, None)),
+                Inline::Bold(inner) => out.push(Inline::Bold(unsourced_inlines(inner))),
+                Inline::Link { text, index, link } => out.push(Inline::Link {
+                    text: unsourced_inlines(text),
+                    index,
+                    link,
+                }),
+            }
+        }
+        out
     }
 
     #[test]
@@ -1191,24 +1352,27 @@ mod tests {
 
     #[test]
     fn a_heading_ends_the_block_before_it_and_is_bold() {
-        let blocks = parse("text\n## Two `c`\nmore\n- item\n# One");
+        let blocks = unsourced(parse("text\n## Two `c`\nmore\n- item\n# One"));
         assert_eq!(
             blocks,
             [
-                Block::Paragraph(vec![Inline::Text("text".into())]),
+                Block::Paragraph(vec![Inline::Text("text".into(), None)]),
                 Block::Heading {
                     level: 2,
-                    text: vec![Inline::Text("Two ".into()), Inline::Code("c".into())],
+                    text: vec![
+                        Inline::Text("Two ".into(), None),
+                        Inline::Code("c".into(), None)
+                    ],
                 },
-                Block::Paragraph(vec![Inline::Text("more".into())]),
+                Block::Paragraph(vec![Inline::Text("more".into(), None)]),
                 Block::List(vec![Item {
                     depth: 0,
                     number: None,
-                    text: vec![Inline::Text("item".into())],
+                    text: vec![Inline::Text("item".into(), None)],
                 }]),
                 Block::Heading {
                     level: 1,
-                    text: vec![Inline::Text("One".into())],
+                    text: vec![Inline::Text("One".into(), None)],
                 },
             ]
         );
@@ -1225,17 +1389,17 @@ mod tests {
     #[test]
     fn a_line_of_dashes_is_a_rule_and_ends_the_block_before_it() {
         assert_eq!(
-            parse("text\n---\n- item\n  ----\n--"),
+            unsourced(parse("text\n---\n- item\n  ----\n--")),
             [
-                Block::Paragraph(vec![Inline::Text("text".into())]),
+                Block::Paragraph(vec![Inline::Text("text".into(), None)]),
                 Block::Rule,
                 Block::List(vec![Item {
                     depth: 0,
                     number: None,
-                    text: vec![Inline::Text("item".into())],
+                    text: vec![Inline::Text("item".into(), None)],
                 }]),
                 Block::Rule,
-                Block::Paragraph(vec![Inline::Text("--".into())]),
+                Block::Paragraph(vec![Inline::Text("--".into(), None)]),
             ]
         );
         let lines = render("---", 6);
@@ -1247,8 +1411,11 @@ mod tests {
     fn four_hashes_or_a_bare_hash_stay_text() {
         for text in ["#### four", "#", "# ", "#nospace"] {
             assert_eq!(
-                parse(text),
-                [Block::Paragraph(vec![Inline::Text(text.trim().into())])],
+                unsourced(parse(text)),
+                [Block::Paragraph(vec![Inline::Text(
+                    text.trim().into(),
+                    None
+                )])],
                 "{text:?}"
             );
         }
@@ -1286,10 +1453,10 @@ mod tests {
     #[test]
     fn a_lone_backtick_is_text() {
         assert_eq!(
-            parse("`code` and a ` alone"),
+            unsourced(parse("`code` and a ` alone")),
             vec![Block::Paragraph(vec![
-                Inline::Code("code".into()),
-                Inline::Text(" and a ` alone".into()),
+                Inline::Code("code".into(), None),
+                Inline::Text(" and a ` alone".into(), None),
             ])]
         );
         assert_eq!(strings(&render("a ` b", 6)), padded(&["a ` b"], 6));
@@ -1414,8 +1581,8 @@ mod tests {
     #[test]
     fn a_tab_name_is_not_drawn() {
         assert_eq!(
-            render("```rust tab=\"owned\"\nlet\n```", 10),
-            render("```rust\nlet\n```", 10)
+            looks(render("```rust tab=\"owned\"\nlet\n```", 10)),
+            looks(render("```rust\nlet\n```", 10))
         );
     }
 
@@ -1425,8 +1592,8 @@ mod tests {
         let fun = lines[1].iter().find(|p| p.0 == "fn").unwrap();
         assert_eq!(fun.1.fg, Some(Color::Blue));
         let lines = render("```nosuchlang\nfn main() {}\n```", 16);
-        assert_eq!(lines[1].len(), 2);
-        assert_eq!(lines[1][1].1, Style::new());
+        assert_eq!(lines[1][1].0, "fn main() {}");
+        assert_eq!(look(lines[1][1].1), Style::new());
     }
 
     #[test]
@@ -1464,9 +1631,10 @@ mod tests {
             strings(&lines),
             ["┌ rust      ", "│ let x = \"a", "┆ bcdefgh\"; "]
         );
-        assert_eq!(lines[1][1], ("let".to_string(), THEME.keyword));
+        assert_eq!(lines[1][1].0, "let");
+        assert_eq!(look(lines[1][1].1), THEME.keyword);
         let tail = lines[2].iter().find(|p| p.0.starts_with("bcd")).unwrap();
-        assert_eq!(tail.1, THEME.string);
+        assert_eq!(look(tail.1), THEME.string);
     }
 
     #[test]
@@ -1474,10 +1642,11 @@ mod tests {
         assert_eq!(
             parse("text\n```sh\nls\n\n- not a list"),
             vec![
-                Block::Paragraph(vec![Inline::Text("text".into())]),
+                Block::Paragraph(vec![Inline::Text("text".into(), Some(0))]),
                 Block::Code {
                     lang: Some("sh".into()),
                     lines: vec!["ls".into(), "".into(), "- not a list".into()],
+                    sources: vec![11, 14, 15],
                     wrap: false,
                     tab: None,
                 },
@@ -1573,11 +1742,14 @@ mod tests {
     #[test]
     fn bold_in_a_paragraph_is_bold_and_the_text_around_it_is_not() {
         assert_eq!(
-            parse("a **b `c`** d"),
+            unsourced(parse("a **b `c`** d")),
             [Block::Paragraph(vec![
-                Inline::Text("a ".into()),
-                Inline::Bold(vec![Inline::Text("b ".into()), Inline::Code("c".into())]),
-                Inline::Text(" d".into()),
+                Inline::Text("a ".into(), None),
+                Inline::Bold(vec![
+                    Inline::Text("b ".into(), None),
+                    Inline::Code("c".into(), None)
+                ]),
+                Inline::Text(" d".into(), None),
             ])]
         );
         let lines = render("a **bold** d", 20);
@@ -1601,23 +1773,26 @@ mod tests {
     #[test]
     fn an_unclosed_bold_marker_stays_literal() {
         assert_eq!(
-            parse("a **b and * c"),
-            [Block::Paragraph(vec![Inline::Text("a **b and * c".into())])]
+            unsourced(parse("a **b and * c")),
+            [Block::Paragraph(vec![Inline::Text(
+                "a **b and * c".into(),
+                None
+            )])]
         );
         assert_eq!(
-            parse("****"),
-            [Block::Paragraph(vec![Inline::Text("****".into())])]
+            unsourced(parse("****")),
+            [Block::Paragraph(vec![Inline::Text("****".into(), None)])]
         );
     }
 
     #[test]
     fn stars_inside_inline_code_stay_literal() {
         assert_eq!(
-            parse("`**a**` and `x`"),
+            unsourced(parse("`**a**` and `x`")),
             [Block::Paragraph(vec![
-                Inline::Code("**a**".into()),
-                Inline::Text(" and ".into()),
-                Inline::Code("x".into()),
+                Inline::Code("**a**".into(), None),
+                Inline::Text(" and ".into(), None),
+                Inline::Code("x".into(), None),
             ])]
         );
     }
@@ -1625,24 +1800,24 @@ mod tests {
     #[test]
     fn a_quote_holds_blocks_parsed_from_inside_it() {
         assert_eq!(
-            parse("> one\n> two\n>\n> - a\n> - b\nafter"),
+            unsourced(parse("> one\n> two\n>\n> - a\n> - b\nafter")),
             [
                 Block::Quote(vec![
-                    Block::Paragraph(vec![Inline::Text("one two".into())]),
+                    Block::Paragraph(vec![Inline::Text("one two".into(), None)]),
                     Block::List(vec![
                         Item {
                             depth: 0,
                             number: None,
-                            text: vec![Inline::Text("a".into())],
+                            text: vec![Inline::Text("a".into(), None)],
                         },
                         Item {
                             depth: 0,
                             number: None,
-                            text: vec![Inline::Text("b".into())],
+                            text: vec![Inline::Text("b".into(), None)],
                         },
                     ]),
                 ]),
-                Block::Paragraph(vec![Inline::Text("after".into())]),
+                Block::Paragraph(vec![Inline::Text("after".into(), None)]),
             ]
         );
     }
@@ -1807,11 +1982,11 @@ mod tests {
     #[test]
     fn bold_in_link_text_is_bold_and_keeps_the_link() {
         assert_eq!(
-            parse("[**failed** now](t)"),
+            unsourced(parse("[**failed** now](t)")),
             [Block::Paragraph(vec![Inline::Link {
                 text: vec![
-                    Inline::Bold(vec![Inline::Text("failed".into())]),
-                    Inline::Text(" now".into()),
+                    Inline::Bold(vec![Inline::Text("failed".into(), None)]),
+                    Inline::Text(" now".into(), None),
                 ],
                 index: 0,
                 link: link_to("t"),
@@ -1840,11 +2015,11 @@ mod tests {
     #[test]
     fn a_link_in_bold_is_bold_and_keeps_its_index() {
         assert_eq!(
-            parse("**a [ok](t)**"),
+            unsourced(parse("**a [ok](t)**")),
             [Block::Paragraph(vec![Inline::Bold(vec![
-                Inline::Text("a ".into()),
+                Inline::Text("a ".into(), None),
                 Inline::Link {
-                    text: vec![Inline::Text("ok".into())],
+                    text: vec![Inline::Text("ok".into(), None)],
                     index: 0,
                     link: link_to("t"),
                 },
@@ -2012,5 +2187,158 @@ mod tests {
             .map(|(row, _)| row)
             .collect();
         assert_eq!(rows, layout(&blocks, 6));
+    }
+
+    // every kind of block, with a paragraph over several lines, a
+    // double space, tabs in prose and code, and nesting in a quote
+    const VARIED: &str = "# Title with `code`
+
+A paragraph that  spans
+several source lines with **bold words**, `inline code`
+and a [link text](https://x.test \"t\") at the end.
+
+- first bullet item that wraps
+  - nested bullet with **bold**
+    continued on a second line
+
+1. numbered one
+2. numbered two
+
+| name | value |
+|------|-------|
+| ann | `12` and more |
+
+> quoted text with `code`
+> - a quoted bullet item
+>   continued here
+
+```rust
+fn main() {\tlet x = \"a long string literal past the width\"; }
+\tindented
+```
+
+---
+
+tab\tseparated\twords";
+
+    fn sourced(blocks: &[Block], width: usize) -> Vec<(String, usize)> {
+        layout_marked(blocks, width)
+            .into_iter()
+            .flat_map(|(row, _)| row)
+            .filter_map(|(s, style)| style.source.map(|at| (s, at)))
+            .collect()
+    }
+
+    #[test]
+    fn every_piece_with_a_source_starts_with_its_text_there() {
+        let mut blocks = parse(VARIED);
+        for wrap_code in [false, true] {
+            for block in &mut blocks {
+                if let Block::Code { wrap, .. } = block {
+                    *wrap = wrap_code;
+                }
+            }
+            for width in [12, 20, 40, 80] {
+                for (s, at) in sourced(&blocks, width) {
+                    assert!(
+                        VARIED[at..].starts_with(&s),
+                        "{s:?} at {at} in width {width}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_word_of_the_prose_has_a_source() {
+        let pieces = sourced(&parse(VARIED), 80);
+        for word in [
+            "Title",
+            "code",
+            "paragraph",
+            "spans",
+            "several",
+            "bold",
+            "words",
+            "inline",
+            "link",
+            "text",
+            "end.",
+            "first",
+            "nested",
+            "continued",
+            "numbered",
+            "name",
+            "value",
+            "ann",
+            "12",
+            "more",
+            "quoted",
+            "here",
+            "main",
+            "indented",
+            "tab",
+            "separated",
+        ] {
+            assert!(
+                pieces.iter().any(|(s, _)| s.contains(word)),
+                "{word:?} in {pieces:?}"
+            );
+        }
+    }
+
+    fn source_of(rows: &[(Row, Mark)], text: &str) -> Option<usize> {
+        rows.iter()
+            .flat_map(|(row, _)| row)
+            .find(|p| p.0 == text)
+            .unwrap()
+            .1
+            .source
+    }
+
+    #[test]
+    fn a_continuation_row_starts_at_the_source_of_its_first_word() {
+        let rows = layout_marked(&parse("alpha beta\ngamma delta"), 11);
+        assert_eq!(rows[1].0[0].0, "gamma delta");
+        assert_eq!(rows[1].0[0].1.source, Some(11));
+        let rows = layout_marked(&parse("ab cdefghijkl"), 5);
+        assert_eq!(rows[2].0[0].0, "hijkl");
+        assert_eq!(rows[2].0[0].1.source, Some(8));
+    }
+
+    #[test]
+    fn inline_code_starts_past_its_backtick() {
+        let rows = layout_marked(&parse("run `x y` now"), 20);
+        assert_eq!(source_of(&rows, "x y"), Some(5));
+    }
+
+    #[test]
+    fn link_text_starts_past_its_bracket() {
+        let rows = layout_marked(&parse("see [the docs](u)"), 20);
+        assert_eq!(source_of(&rows, "the"), Some(5));
+        assert_eq!(source_of(&rows, "docs"), Some(9));
+    }
+
+    #[test]
+    fn text_in_a_quote_has_sources_in_the_whole_document() {
+        let rows = layout_marked(&parse("intro\n\n> one\n> - two `three`"), 20);
+        assert_eq!(source_of(&rows, "one"), Some(9));
+        assert_eq!(source_of(&rows, "two "), Some(17));
+        assert_eq!(source_of(&rows, "three"), Some(22));
+    }
+
+    #[test]
+    fn a_code_line_starts_at_its_line_and_a_tab_has_no_source() {
+        let rows = layout_marked(&parse("x\n\n```\nlet a = 1;\n\tb\n```"), 20);
+        assert_eq!(source_of(&rows, "let a = 1;"), Some(7));
+        assert_eq!(source_of(&rows, "    "), None);
+        assert_eq!(source_of(&rows, "b"), Some(19));
+    }
+
+    #[test]
+    fn a_bullet_has_no_source_and_its_text_does() {
+        let rows = layout_marked(&parse("- item"), 10);
+        assert_eq!(source_of(&rows, "• "), None);
+        assert_eq!(source_of(&rows, "item"), Some(2));
     }
 }
