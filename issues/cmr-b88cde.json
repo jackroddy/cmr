@@ -3,20 +3,20 @@
   "title": "A document renders to a Page under a Format built with a builder",
   "body": "Today `cmr::parse(markdown)` returns a `Document` holding `blocks` and `links`, and `Document::rows(width)` lays it out as a `Vec<Row>`, each row exactly `width` columns. Every other layout choice is left to the caller. coax makes several of them itself in its `ui.rs`:\n\n- `wrap_code` sets `wrap` on every `Block::Code`\n- `rule_tables` sets `rules` on every `Block::Table`\n- `table_width` and `column_widths` cap table columns at 40 and squeeze them toward 16. `column_widths` finds the natural widths by laying a table out at 1000 columns and splitting cmr's drawn `─┼─` rule.\n- `kept_whole` lays a wide code block out at its natural width so coax can pan it, assuming cmr's 2-column code gutter\n- `markdown_popup_rows` cuts output to a number of rows and ends it with `…`\n\n## Proposal\n\nThree top-level types: `Document`, the parsed markdown; `Format`, how to lay it out and draw it; `Page`, the result.\n\n```rust\nlet document = cmr::parse(TOP);\nlet page = document.render();\n\nlet column = Format::builder().width(30).height(8).build();\nlet left = cmr::parse(LEFT).render_with(column);\n```\n\n- `Document::render(&self) -> Page` is `self.render_with(Format::default())`.\n- `Document::render_with(&self, Format) -> Page` replaces `Document::rows`.\n- `Format` is `Copy`, has private fields, no `new()`, and a public `Default`. `Format::builder()` returns a `FormatBuilder`. Each setter takes and returns the builder, and `build()` returns the `Format`.\n- `Page` holds the rows. `rows() -> &[Row]`, `string() -> String` with SGR codes and OSC 8 hyperlinks, `bytes() -> Vec<u8>`, and `Display`.\n\nThe first group of settings:\n\n| setter | takes | default |\n|---|---|---|\n| `width` | `usize` | 80 |\n| `height` | `usize`: pad short output, clip long output and end it with `…` | none, the natural height |\n| `horizontal` | `Horizontal::{Left, Center, Right}`, where content narrower than the width sits | `Left` |\n| `vertical` | `Vertical::{Top, Center, Bottom, Spread}`, where spare height goes. `Spread` shares it between blocks. | `Top` |\n| `code` | `Overflow::{Wrap, Cut, Keep}` for code lines wider than the width. `Keep` lays the block out at its natural width. | `Cut` |\n| `table_rules` | `bool`, a rule between body rows | `false` |\n| `columns` | `RangeInclusive<usize>`, the floor and cap of a table column's width | today's behaviour |\n| `gap` | `usize`, blank rows between blocks | 1 |\n\n## Rejected\n\n- A builder returned by `Document::format()` that holds the document. Nothing could name it: it was a layout and a document at once.\n- `Layout` for the settings. It leaves out the visual ones, such as `table_rules`.\n- Renaming the per-piece `Style` to free the name for the settings. A per-piece `Style` is what readers expect.\n- Bit flags for alignment. They allow combinations like `Left | Center`, and they mixed the horizontal and vertical choices into one value.\n\n## Out of scope\n\n- `Row::links()`, which would give each link's row, column and width for clicks, and an `indent` setting. Both come after this group.\n- Moving coax onto the new API, which is coax-550b84 in coax.\n\n## Cost\n\nBreaking, inside the 0.3.0 release that is already breaking. `Document::rows` goes away.",
   "type": "feature",
-  "status": "in_progress",
+  "status": "closed",
   "priority": 1,
   "labels": [],
   "parent": null,
   "blocked_by": [],
   "related": [],
   "assignee": "Jack Roddy/c836bb27",
-  "lease_expires": "2026-11-25T21:44:13.032951739Z",
+  "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-11-25T21:29:10.415528502Z",
-  "updated_at": "2026-11-25T21:35:56.852916049Z",
-  "closed_at": null,
-  "close_reason": null,
-  "resolution": null,
+  "updated_at": "2026-11-25T21:51:21.923616984Z",
+  "closed_at": "2026-11-25T21:51:21.923616984Z",
+  "close_reason": "Landed in f455382. The gaps coax found moving onto it are cmr-9f5a73, cmr-12acb4, cmr-79331f, cmr-1cd4b7, cmr-db5974, cmr-93655b and cmr-d8966f.",
+  "resolution": "done",
   "notes": [
     {
       "id": "80a62461",
@@ -32,6 +32,9 @@
       "commit": "48ac8bc",
       "branch": "dev"
     },
-    "closed": null
+    "closed": {
+      "commit": "f455382",
+      "branch": "dev"
+    }
   }
 }
