@@ -1,0 +1,28 @@
+{
+  "id": "cmr-d8966f",
+  "title": "A format can cut to a height without padding",
+  "body": "`.height(n)` pads short output to `n` rows and cuts long output to `n` rows ending in a dim `…`. coax's link popup wants only the cut: it sizes its box from the row count, so padding would grow every short popup to 15 rows. `markdown_popup_rows` in coax's `src/ui.rs` makes the cut itself.\n\n## Proposal\n\n`.max_height(n)`, which cuts as `height` does and never pads.",
+  "type": "feature",
+  "status": "open",
+  "priority": 2,
+  "labels": [],
+  "parent": null,
+  "blocked_by": [],
+  "related": [],
+  "assignee": null,
+  "lease_expires": null,
+  "defer_until": null,
+  "created_at": "2026-11-25T21:51:12.659576736Z",
+  "updated_at": "2026-11-25T21:51:12.659576736Z",
+  "closed_at": null,
+  "close_reason": null,
+  "resolution": null,
+  "notes": [],
+  "stamps": {
+    "created": {
+      "commit": "f455382",
+      "branch": "dev"
+    },
+    "closed": null
+  }
+}
