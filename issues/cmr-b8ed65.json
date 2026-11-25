@@ -1,0 +1,28 @@
+{
+  "id": "cmr-b8ed65",
+  "title": "A code block can keep a margin after its longest line",
+  "body": "`FormatBuilder::code_margin(n)` keeps `n` columns free at the end of a code block's header row. coax needs room for its copy glyph on every row of the block: it lays a kept block out at its longest line plus the gutter plus `COPY_ROOM`, and puts the glyph on the first body row when the block has no language and so no header row. So coax still measures the block itself in `kept_whole` in `src/ui.rs`.\n\n## Proposal\n\n`code_margin` keeps its columns free after the longest line on every row of the block, not only in the header. A block with no language under it then still has the room coax draws into.",
+  "type": "feature",
+  "status": "open",
+  "priority": 3,
+  "labels": [],
+  "parent": null,
+  "blocked_by": [],
+  "related": [],
+  "assignee": null,
+  "lease_expires": null,
+  "defer_until": null,
+  "created_at": "2026-11-25T22:45:06.833562457Z",
+  "updated_at": "2026-11-25T22:45:06.833562457Z",
+  "closed_at": null,
+  "close_reason": null,
+  "resolution": null,
+  "notes": [],
+  "stamps": {
+    "created": {
+      "commit": "fff2263",
+      "branch": "dev"
+    },
+    "closed": null
+  }
+}
