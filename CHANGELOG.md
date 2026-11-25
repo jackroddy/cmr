@@ -25,6 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `None`. `Block::Code`'s lines keep their tabs. `layout` draws each
   tab as four spaces. These changes break code that builds the types or
   matches them without `..`.
+- The space between two words of one link carries the link's style and
+  index. A link of several words is underlined across its spaces, and a
+  terminal gets one hyperlink for it, not one per word.
 
 ## [0.2.0] - 2026-11-12
 

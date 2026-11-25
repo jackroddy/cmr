@@ -914,9 +914,21 @@ fn wrap(words: &[Word], width: usize) -> Vec<(Vec<Piece>, Join)> {
     for word in words {
         let n = len(&word.pieces);
         if !line.is_empty() && len(&line) + 1 + n <= width {
-            let space = Style {
-                source: word.space,
-                ..Style::new()
+            let before = line.last().map(|(_, style)| *style);
+            let after = word.pieces.first().map(|(_, style)| *style);
+            let space = match (before, after) {
+                (Some(before), Some(after))
+                    if before.link.is_some() && before.link == after.link =>
+                {
+                    Style {
+                        source: word.space,
+                        ..before
+                    }
+                }
+                _ => Style {
+                    source: word.space,
+                    ..Style::new()
+                },
             };
             push_seg(&mut line, " ".into(), space);
         } else if !line.is_empty() {
@@ -1869,7 +1881,7 @@ mod tests {
         let lines = render("see [the docs](https://x.test/a) now", 30);
         assert_eq!(strings(&lines), padded(&["see the docs now"], 30));
         let pieces = link_pieces(&lines[0]);
-        assert_eq!(pieces, [("the", Some(0)), ("docs", Some(0))]);
+        assert_eq!(pieces, [("the docs", Some(0))]);
         assert!(
             lines[0]
                 .iter()
@@ -1934,8 +1946,7 @@ mod tests {
         assert_eq!(
             first,
             [
-                ("one", Some(0)),
-                ("two", Some(0)),
+                ("one two", Some(0)),
                 ("three", Some(0)),
                 ("four", Some(0)),
                 ("five", Some(1)),
@@ -1965,6 +1976,17 @@ mod tests {
         assert_eq!(
             text("a [b](u) c", 10, true),
             ["a \x1b]8;;u\x1b\\\x1b[4mb\x1b[0m\x1b]8;;\x1b\\ c"]
+        );
+    }
+
+    #[test]
+    fn the_space_between_two_words_of_a_link_is_part_of_the_link() {
+        let lines = render("a [b c](u) d", 20);
+        assert_eq!(piece(&lines, "b c").1.link, Some(0));
+        assert!(piece(&lines, "b c").1.underline);
+        assert_eq!(
+            text("a [b c](u) d", 20, true),
+            ["a \x1b]8;;u\x1b\\\x1b[4mb c\x1b[0m\x1b]8;;\x1b\\ d"]
         );
     }
 
@@ -2315,8 +2337,7 @@ tab\tseparated\twords";
     #[test]
     fn link_text_starts_past_its_bracket() {
         let rows = layout_marked(&parse("see [the docs](u)"), 20);
-        assert_eq!(source_of(&rows, "the"), Some(5));
-        assert_eq!(source_of(&rows, "docs"), Some(9));
+        assert_eq!(source_of(&rows, "the docs"), Some(5));
     }
 
     #[test]
