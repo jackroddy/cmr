@@ -1,0 +1,28 @@
+{
+  "id": "cmr-db5974",
+  "title": "A document renders one of its blocks",
+  "body": "coax lays a reply out one top-level block at a time, because it draws code blocks, tables and tab groups as parts of their own. Its `render_block` builds a new one-block `Document` for each block, cloning the block and every link of the reply so that link indices stay the same.\n\n## Proposal\n\nEither of:\n\n- `Document::render_block(&self, index: usize, format: Format) -> Page`\n- `Page::blocks(&self) -> &[Range<usize>]`, the rows each top-level block covers, so coax renders once and splits the page.\n\n## Open\n\n- Which of the two. The second keeps one render per reply. The first keeps coax's current shape.",
+  "type": "feature",
+  "status": "open",
+  "priority": 2,
+  "labels": [],
+  "parent": null,
+  "blocked_by": [],
+  "related": [],
+  "assignee": null,
+  "lease_expires": null,
+  "defer_until": null,
+  "created_at": "2026-11-25T21:51:12.642612377Z",
+  "updated_at": "2026-11-25T21:51:12.642612377Z",
+  "closed_at": null,
+  "close_reason": null,
+  "resolution": null,
+  "notes": [],
+  "stamps": {
+    "created": {
+      "commit": "f455382",
+      "branch": "dev"
+    },
+    "closed": null
+  }
+}
