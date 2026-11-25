@@ -13,9 +13,9 @@
   "lease_expires": null,
   "defer_until": null,
   "created_at": "2026-11-25T03:41:42.307812652Z",
-  "updated_at": "2026-11-25T03:49:39.456615341Z",
+  "updated_at": "2026-11-25T03:49:51.93123292Z",
   "closed_at": "2026-11-25T03:49:39.456615341Z",
-  "close_reason": "Landed in 7e0f882. Style::source holds each piece's starting byte. Inline::Text, Inline::Code and Block::Code carry the offsets from parse to layout.",
+  "close_reason": "Landed in 48ac8bc. Style::source holds each piece's starting byte. Inline::Text, Inline::Code and Block::Code carry the offsets from parse to layout.",
   "resolution": "done",
   "notes": [],
   "stamps": {
