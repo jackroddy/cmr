@@ -9,17 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `Document::render` lays out a document as a `Page` under the default
+  `Format`. `Document::render_with` lays it out under a given `Format`.
+  `Page::rows` returns the rows. `Page::string`, `Page::bytes` and
+  `Page`'s `Display` write the rows with SGR codes and OSC 8 hyperlinks,
+  one row per line.
+- `Format` holds the layout settings. `Format::builder()` returns a
+  `FormatBuilder` with a setter for each of `width`, `height`,
+  `horizontal`, `vertical`, `code`, `table_rules`, `columns` and `gap`.
+  `Format::default()` is 80 columns at the text's natural height.
+- `Horizontal` is where the text sits across the width. `Vertical` is
+  where it sits in the rows a `height` leaves spare. `Overflow` is whether
+  a code line wider than the width wraps, is cut, or widens its block.
 - `Block::Table` has a `rules` field, which the parser sets to false. When a
-  caller sets it, `layout` draws the header rule again between body rows.
+  caller sets it, the table has the header rule again between body rows.
   The new field breaks code that builds `Block::Table` or matches it without
   `..`.
 - A laid-out piece's `Style::source` holds the byte of the parsed text its
   text starts at, for text cmr takes verbatim from the source. Bullets,
   bars, gutters, padding and the spaces cmr adds have `None`.
 - Italics between single `*` or `_` markers, parsed as `Inline::Italic` and
-  drawn with `Style::italic`, which `text` writes as SGR 3. An `_` inside a
-  word, as in `snake_case`, stays as typed, and so does a marker with a
-  space just inside it. The new variant and field break code that matches
+  drawn with `Style::italic`, which a row's `Display` writes as SGR 3. An
+  `_` inside a word, as in `snake_case`, stays as typed, and so does a
+  marker with a space just inside it. The new variant and field break code that matches
   `Inline` without a wildcard or builds `Style` without `..`.
 
 ### Changed
@@ -27,12 +39,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Inline::Text` and `Inline::Code` hold the byte their text starts at.
   `Block::Code` has a `sources` field with the byte each line starts at.
   The space that joins two lines of a paragraph is its own `Inline::Text`,
-  with `None`. `Block::Code`'s lines keep their tabs. `layout` draws each
-  tab as four spaces. These changes break code that builds the types or
-  matches them without `..`.
+  with `None`. `Block::Code`'s lines keep their tabs. A tab is drawn as
+  four spaces. These changes break code that builds the types or matches
+  them without `..`.
 - The space between two words of one link carries the link's style and
   index. A link of several words is underlined across its spaces, and a
   terminal gets one hyperlink for it, not one per word.
+- `parse` returns a `Document`, which holds the text's `blocks` and
+  `links`. A caller can change `blocks` before rendering them.
+- `Row` is a struct. Its `pieces` hold what a `Row` held before. Its `lead`
+  and `join` are the fields `Mark` had. `Row::text` returns the row's
+  plain text. `Row`'s `Display` writes the text with SGR codes and an OSC 8
+  hyperlink for each link. Both write the full width of the row, trailing
+  blanks included.
+
+### Removed
+
+- The functions `render`, `layout`, `layout_marked` and `text`.
+  `parse(..).render()` and `parse(..).render_with(format)` take their
+  place.
+- The `links` function. Its list is now `Document::links`.
+- `Mark`. Its fields are on `Row`.
 
 ## [0.2.0] - 2026-11-12
 
