@@ -7,8 +7,8 @@ as rows of styled text. The name expands to command line markdown renderer.
 
 Design rationale that the code does not state lives in foam's memories, and
 pending work lives in foam's issues. `foam prime` prints both at session start.
-Until something runs, the README stays at its header and license, and design,
-plans and decisions go to foam, never to this file.
+The README follows the `readme` skill. Design, plans and decisions go to foam,
+never to this file.
 
 ## conventions
 
