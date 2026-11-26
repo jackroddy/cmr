@@ -258,7 +258,7 @@ pub struct Item {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Block {
     Heading {
-        /// One to three, the number of `#`.
+        /// One to four, the number of `#`.
         level: u8,
         text: Vec<Inline>,
     },
@@ -855,7 +855,7 @@ fn offset(src: &str, part: &str) -> usize {
 fn heading(line: &str) -> Option<(u8, &str)> {
     let line = line.trim_start();
     let hashes = line.bytes().take_while(|&b| b == b'#').count();
-    if !(1..=3).contains(&hashes) {
+    if !(1..=4).contains(&hashes) {
         return None;
     }
     let rest = line[hashes..].strip_prefix(' ')?.trim();
@@ -1396,7 +1396,12 @@ fn heading_lines(
 ) {
     let style = match level {
         1 => theme.heading.underline(),
-        _ => theme.heading,
+        2 => theme.heading,
+        3 => theme.heading.italic(),
+        _ => Style {
+            bold: false,
+            ..theme.heading.italic()
+        },
     };
     // patched after the wrap, so the spaces between the words
     // carry the underline too
@@ -1926,8 +1931,26 @@ mod tests {
     }
 
     #[test]
-    fn four_hashes_or_a_bare_hash_stay_text() {
-        for text in ["#### four", "#", "# ", "#nospace"] {
+    fn each_of_the_four_heading_levels_has_its_own_style() {
+        let doc = parse("# a\n\n## b\n\n### c\n\n#### d");
+        let style = |text: &str| {
+            let rows = rows_at(&doc, 10);
+            rows.iter()
+                .flat_map(|row| row.pieces.iter())
+                .find(|piece| piece.0.trim() == text)
+                .unwrap()
+                .1
+        };
+        let look = |s: Style| (s.bold, s.italic, s.underline);
+        assert_eq!(look(style("a")), (true, false, true));
+        assert_eq!(look(style("b")), (true, false, false));
+        assert_eq!(look(style("c")), (true, true, false));
+        assert_eq!(look(style("d")), (false, true, false));
+    }
+
+    #[test]
+    fn five_hashes_or_a_bare_hash_stay_text() {
+        for text in ["##### five", "#", "# ", "#nospace"] {
             assert_eq!(
                 unsourced(parse(text).blocks),
                 [Block::Paragraph(vec![Inline::Text(

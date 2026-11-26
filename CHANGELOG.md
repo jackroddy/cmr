@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Headings of four `#`, drawn in italics. A `###` heading is now bold and
+  italic, so each of the four levels looks different.
 - `Document::render` lays out a document as a `Page` under the default
   `Format`. `Document::render_with` lays it out under a given `Format`.
   `Page::rows` returns the rows. `Page::string`, `Page::bytes` and
